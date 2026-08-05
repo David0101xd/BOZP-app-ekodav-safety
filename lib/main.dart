@@ -45,8 +45,11 @@ void openGoogleMaps(String gpsCoords) {
   html.window.open(url, '_blank');
 }
 
+// Globalni prediktivní historie zadaných míst v rámci nálezů
+Set<String> subLocationHistory = {'Sklad', 'Parkoviště', 'Rampa', 'Dílna', 'Kanceláře', 'Výrobní hala'};
+
 // -----------------------------------------------------------------------------
-// KLIKACÍ LOGO EKODAV (ZABUDOVANÉ PŘÍMO V KÓDU)
+// KLIKACÍ LOGO EKODAV
 // -----------------------------------------------------------------------------
 Widget buildEkodavLogoHeader() {
   return GestureDetector(
@@ -130,7 +133,7 @@ class Finding {
   String severity;
   String description;
   String legislation;
-  String locationDetail;
+  String locationDetail; // Ukládá přesné místo (Sklad, Parkoviště...)
   bool isPhotoTaken;
   Uint8List? photoBytes;
   DateTime timestamp;
@@ -167,7 +170,6 @@ class InspectionReport {
 
 List<Finding> globalFindings = [];
 List<InspectionReport> savedReports = [
-  // Ukázkové proběhlé reporty pro testování historie
   InspectionReport(
     id: '1',
     locationName: 'Skladová hala A - Brno (GPS: 49.1951, 16.6078)',
@@ -179,6 +181,7 @@ List<InspectionReport> savedReports = [
         category: 'BOZP',
         severity: 'Vysoka',
         description: 'Blokovaný únikový východ paletami',
+        locationDetail: 'Sklad',
         legislation: 'Zakonik prace c. 262/2006 Sb.',
         timestamp: DateTime.now().subtract(const Duration(days: 2)),
       ),
@@ -286,7 +289,7 @@ class _HomeScreenState extends State<HomeScreen> {
 }
 
 // -----------------------------------------------------------------------------
-// 2. ZADÁNÍ LOKACE S REALNOU GPS A HISTORIÍ PROBĚHLÝCH REPORTŮ
+// 2. ZADÁNÍ LOKACE A HISTORIE
 // -----------------------------------------------------------------------------
 class NewReportScreen extends StatefulWidget {
   const NewReportScreen({Key? key}) : super(key: key);
@@ -298,9 +301,7 @@ class NewReportScreen extends StatefulWidget {
 class _NewReportScreenState extends State<NewReportScreen> {
   final TextEditingController _locationController = TextEditingController();
   bool _isGettingGps = false;
-  String? _detectedGps;
 
-  // Získá aktuální GPS přes prohlížeč telefonu
   void _getCurrentGpsLocation() {
     setState(() {
       _isGettingGps = true;
@@ -314,7 +315,6 @@ class _NewReportScreenState extends State<NewReportScreen> {
 
         setState(() {
           _isGettingGps = false;
-          _detectedGps = gpsStr;
           if (_locationController.text.isEmpty) {
             _locationController.text = 'Pracoviste v terenu (GPS: $gpsStr)';
           } else {
@@ -355,7 +355,6 @@ class _NewReportScreenState extends State<NewReportScreen> {
             ),
             const SizedBox(height: 10),
 
-            // TLAČÍTKO PRO ZÍSKÁNÍ REALNÉ GPS
             OutlinedButton.icon(
               icon: _isGettingGps
                   ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
@@ -390,7 +389,6 @@ class _NewReportScreenState extends State<NewReportScreen> {
             const SizedBox(height: 24),
             const Divider(thickness: 2),
 
-            // SEZNAM PROBĚHLÝCH REPORTŮ V HISTORII
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
@@ -475,7 +473,7 @@ class _NewReportScreenState extends State<NewReportScreen> {
 }
 
 // -----------------------------------------------------------------------------
-// 3. INSPEKČNÍ REŽIM
+// 3. INSPEKČNÍ REŽIM SE ZADÁVÁNÍM MÍSTA
 // -----------------------------------------------------------------------------
 class InspectionModeScreen extends StatefulWidget {
   final String locationName;
@@ -490,6 +488,7 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
   String _selectedCategory = 'BOZP';
   String _selectedSeverity = 'Stredni';
   final TextEditingController _noteController = TextEditingController();
+  final TextEditingController _placeController = TextEditingController();
   final ImagePicker _picker = ImagePicker();
 
   int _editingIndex = -1;
@@ -585,12 +584,19 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
   void _saveAndNext() {
     setState(() {
       final autoLegislation = getDefaultLegislation(_selectedCategory);
+      final placeText = _placeController.text.trim();
+
+      // Uložení místa do historie pro předikci
+      if (placeText.isNotEmpty) {
+        subLocationHistory.add(placeText);
+      }
 
       if (_editingIndex >= 0 && _editingIndex < globalFindings.length) {
         final existing = globalFindings[_editingIndex];
         existing.category = _selectedCategory;
         existing.severity = _selectedSeverity;
         existing.description = _noteController.text.isEmpty ? 'Nalez bez poznamky' : _noteController.text;
+        existing.locationDetail = placeText;
         existing.photoBytes = _currentPhotoBytes;
         existing.isPhotoTaken = _currentPhotoBytes != null;
         if (existing.legislation.isEmpty) {
@@ -604,6 +610,7 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
           category: _selectedCategory,
           severity: _selectedSeverity,
           description: _noteController.text.isEmpty ? 'Nalez bez poznamky' : _noteController.text,
+          locationDetail: placeText,
           legislation: autoLegislation,
           photoBytes: _currentPhotoBytes,
           isPhotoTaken: _currentPhotoBytes != null,
@@ -622,6 +629,7 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
     _editingIndex = -1;
     _currentPhotoBytes = null;
     _noteController.clear();
+    _placeController.clear();
     _selectedCategory = 'BOZP';
     _selectedSeverity = 'Stredni';
   }
@@ -635,6 +643,7 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
         _selectedCategory = finding.category;
         _selectedSeverity = finding.severity;
         _noteController.text = finding.description;
+        _placeController.text = finding.locationDetail;
         _statusMessage = 'Nacten nalez #${finding.orderNumber} k uprave';
       });
     }
@@ -721,6 +730,7 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
                 ),
               ),
 
+            // 1. OBRÁZEK / VYFOCENÍ
             GestureDetector(
               onTap: _showImageSourceDialog,
               child: Container(
@@ -766,8 +776,41 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
                 ),
               ),
             ),
-            const SizedBox(height: 12),
+            const SizedBox(height: 14),
 
+            // NOVÉ: MÍSTO NÁLEZU S PREDIKTIVNÍ HISTORIÍ
+            const Text('Misto / Upresneni lokace nalezu:', style: TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 4),
+            TextField(
+              controller: _placeController,
+              decoration: InputDecoration(
+                hintText: 'napr. Sklad, Parkoviste, Dilna, Rampa...',
+                prefixIcon: const Icon(Icons.place, color: Color(0xFF0284C7)),
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+              ),
+            ),
+            const SizedBox(height: 6),
+            // Prediktivní chipy z historie
+            Wrap(
+              spacing: 6,
+              runSpacing: 4,
+              children: subLocationHistory.map((place) {
+                return ActionChip(
+                  avatar: const Icon(Icons.history, size: 14, color: Color(0xFF0284C7)),
+                  label: Text(place, style: const TextStyle(fontSize: 12)),
+                  backgroundColor: Colors.blue[50],
+                  onPressed: () {
+                    setState(() {
+                      _placeController.text = place;
+                    });
+                  },
+                );
+              }).toList(),
+            ),
+            const SizedBox(height: 14),
+
+            // 2. KATEGORIE
             const Text('2. Kategorie:', style: TextStyle(fontWeight: FontWeight.bold)),
             const SizedBox(height: 4),
             Wrap(
@@ -786,6 +829,7 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
             ),
             const SizedBox(height: 12),
 
+            // 3. ZÁVAŽNOST
             const Text('3. Zavaznost:', style: TextStyle(fontWeight: FontWeight.bold)),
             const SizedBox(height: 4),
             Row(
@@ -815,6 +859,7 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
             ),
             const SizedBox(height: 12),
 
+            // 4. POPIS
             TextField(
               controller: _noteController,
               decoration: const InputDecoration(
@@ -883,7 +928,7 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
                               child: Text('#${item.orderNumber}', style: const TextStyle(color: Colors.white, fontSize: 10)),
                             ),
                       title: Text('${item.category} • ${item.severity}', style: const TextStyle(fontWeight: FontWeight.bold)),
-                      subtitle: Text(item.description),
+                      subtitle: Text('${item.locationDetail.isNotEmpty ? "📍 Misto: ${item.locationDetail}\n" : ""}${item.description}'),
                       onTap: () => _loadFindingIntoForm(index),
                     ),
                   );
@@ -1079,6 +1124,10 @@ class _RevisionTableScreenState extends State<RevisionTableScreen> {
                       ],
                     ),
                     pw.SizedBox(height: 4),
+                    if (f.locationDetail.isNotEmpty) ...[
+                      pw.Text('Misto nalezu: ${f.locationDetail}', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, color: PdfColors.grey800)),
+                      pw.SizedBox(height: 2),
+                    ],
                     pw.Text('Popis: ${f.description}'),
                     pw.SizedBox(height: 4),
                     pw.Text('Zakon / Norma: $leg', style: pw.TextStyle(color: PdfColors.blue900, fontWeight: pw.FontWeight.bold)),
@@ -1158,7 +1207,7 @@ class _RevisionTableScreenState extends State<RevisionTableScreen> {
                             ),
                           Expanded(
                             child: Text(
-                              '• #${f.orderNumber} [${f.category}] ${f.description}\n   Norma: $leg',
+                              '• #${f.orderNumber} [${f.category}] ${f.locationDetail.isNotEmpty ? "(${f.locationDetail}) " : ""}${f.description}\n   Norma: $leg',
                               style: const TextStyle(fontSize: 11),
                             ),
                           ),
@@ -1227,7 +1276,7 @@ class _RevisionTableScreenState extends State<RevisionTableScreen> {
                                   child: Text('#${finding.orderNumber}', style: const TextStyle(color: Colors.white)),
                                 ),
                           title: Text('${finding.category} • ${finding.severity} zavaznost', style: const TextStyle(fontWeight: FontWeight.bold)),
-                          subtitle: Text('${finding.description}\n📜 Norma: $activeLegislation'),
+                          subtitle: Text('${finding.locationDetail.isNotEmpty ? "📍 Misto: ${finding.locationDetail}\n" : ""}${finding.description}\n📜 Norma: $activeLegislation'),
                           trailing: const Icon(Icons.edit, color: Color(0xFF0284C7)),
                           isThreeLine: true,
                           onTap: () => _editLegislation(finding),

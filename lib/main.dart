@@ -296,6 +296,9 @@ List<InspectionReport> savedReports = [
   ),
 ];
 
+// -----------------------------------------------------------------------------
+// 1. DOMOVSKÁ OBRAZOVKA
+// -----------------------------------------------------------------------------
 class HomeScreen extends StatefulWidget {
   const HomeScreen({Key? key}) : super(key: key);
 
@@ -436,6 +439,9 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 }
 
+// -----------------------------------------------------------------------------
+// SPRÁVA LEGISLATIVY
+// -----------------------------------------------------------------------------
 class LegislationManagerScreen extends StatefulWidget {
   const LegislationManagerScreen({Key? key}) : super(key: key);
 
@@ -694,6 +700,9 @@ class _LegislationManagerScreenState extends State<LegislationManagerScreen> {
   }
 }
 
+// -----------------------------------------------------------------------------
+// 2. ZADÁNÍ LOKACE, FIRMY (3 POLÍČKA) + GPS & HISTORIE
+// -----------------------------------------------------------------------------
 class NewReportScreen extends StatefulWidget {
   const NewReportScreen({Key? key}) : super(key: key);
 
@@ -757,6 +766,7 @@ class _NewReportScreenState extends State<NewReportScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            // 3 SAMOSTATNÁ POLÍČKA PRO KONTROLOVANÝ SUBJEKT
             const Text('KONTROLOVANÝ SUBJEKT (FIRMA):', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Color(0xFF0284C7))),
             const SizedBox(height: 8),
 
@@ -802,6 +812,7 @@ class _NewReportScreenState extends State<NewReportScreen> {
             ),
             const SizedBox(height: 18),
 
+            // NÁZEV PROVOZOVNY S TLAČÍTKEM ZÍSKAT GPS
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
@@ -958,6 +969,9 @@ class _NewReportScreenState extends State<NewReportScreen> {
   }
 }
 
+// -----------------------------------------------------------------------------
+// 3. INSPEKČNÍ REŽIM SE ZADÁVÁNÍM MÍSTA
+// -----------------------------------------------------------------------------
 class InspectionModeScreen extends StatefulWidget {
   final String locationName;
   final String companyName;
@@ -1105,7 +1119,7 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
           orderNumber: globalFindings.length + 1,
           category: _selectedCategory,
           severity: _selectedSeverity,
-          description: _noteController.text.isEmpty ? 'Nález bez poznámky' : _noteController.text,
+          description: _noteController.text.isEmpty ? 'Nález bez poznámky' : _noteController.text;
           locationDetail: placeText,
           legislation: matchedLegislation,
           photoBytes: _currentPhotoBytes,

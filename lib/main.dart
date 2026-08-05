@@ -28,9 +28,6 @@ class EkodavSafetyApp extends StatelessWidget {
   }
 }
 
-// -----------------------------------------------------------------------------
-// POMOCNÁ FUNKCE PRO AUTOMATICKÉ URČENÍ LEGISLATIVY
-// -----------------------------------------------------------------------------
 String getDefaultLegislation(String category) {
   switch (category) {
     case 'BOZP':
@@ -52,9 +49,6 @@ String getDefaultLegislation(String category) {
   }
 }
 
-// -----------------------------------------------------------------------------
-// DATOVÉ MODELY (NÁLEZ S PODPOROU REÁLNÉ FOTOGRAFIE)
-// -----------------------------------------------------------------------------
 class Finding {
   final String id;
   int orderNumber;
@@ -64,7 +58,7 @@ class Finding {
   String legislation;
   String locationDetail;
   bool isPhotoTaken;
-  Uint8List? photoBytes; // Reální bajty fotky
+  Uint8List? photoBytes;
   DateTime timestamp;
 
   Finding({
@@ -98,9 +92,6 @@ class InspectionReport {
 List<Finding> globalFindings = [];
 List<InspectionReport> savedReports = [];
 
-// -----------------------------------------------------------------------------
-// 1. DOMOVSKÁ OBRAZOVKA
-// -----------------------------------------------------------------------------
 class HomeScreen extends StatefulWidget {
   const HomeScreen({Key? key}) : super(key: key);
 
@@ -193,9 +184,6 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 }
 
-// -----------------------------------------------------------------------------
-// 2. ZADÁNÍ LOKACE
-// -----------------------------------------------------------------------------
 class NewReportScreen extends StatefulWidget {
   const NewReportScreen({Key? key}) : super(key: key);
 
@@ -267,9 +255,6 @@ class _NewReportScreenState extends State<NewReportScreen> {
   }
 }
 
-// -----------------------------------------------------------------------------
-// 3. INSPEKČNÍ REŽIM ZÍSKÁVÁNÍ SKUTEČNÝCH FOTEK
-// -----------------------------------------------------------------------------
 class InspectionModeScreen extends StatefulWidget {
   final String locationName;
   const InspectionModeScreen({Key? key, required this.locationName}) : super(key: key);
@@ -296,7 +281,6 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
 
   final List<String> _severities = ['Vysoká', 'Střední', 'Nízká', 'Doporučení'];
 
-  // METODA PRO S NÍMÁNÍ NEBO VÝBĚR FOTKY
   Future<void> _pickPhoto(ImageSource source) async {
     try {
       final XFile? pickedFile = await _picker.pickImage(
@@ -313,13 +297,24 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
         });
       }
     } catch (e) {
-      setState(() {
-        _statusMessage = '⚠️ Nepodařilo se pořídit fotku: $e';
-      });
+      // Pokud fotoaparát přímo selže (např. v emulátoru nebo zablokovaný browser), umožníme výběr souboru
+      try {
+        final XFile? galleryFile = await _picker.pickImage(source: ImageSource.gallery);
+        if (galleryFile != null) {
+          final bytes = await galleryFile.readAsBytes();
+          setState(() {
+            _currentPhotoBytes = bytes;
+            _statusMessage = '📷 Fotografie načtena z galerie!';
+          });
+        }
+      } catch (err) {
+        setState(() {
+          _statusMessage = '⚠️ Povolte v prohlížeči přístup k fotoaparátu.';
+        });
+      }
     }
   }
 
-  // DIALOG PRO VOLBU VYFOCENÍ NEBO GALERIE
   void _showImageSourceDialog() {
     showModalBottomSheet(
       context: context,
@@ -335,7 +330,7 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
             const SizedBox(height: 16),
             ListTile(
               leading: const Icon(Icons.camera_alt, color: Color(0xFF0284C7), size: 30),
-              title: const Text('Vyfotit fotoaparátem'),
+              title: const Text('Vyfotit / Vybrat soubor'),
               onTap: () {
                 Navigator.pop(context);
                 _pickPhoto(ImageSource.camera);
@@ -343,7 +338,7 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
             ),
             ListTile(
               leading: const Icon(Icons.photo_library, color: Colors.green, size: 30),
-              title: const Text('Vybrat z galerie mobilu'),
+              title: const Text('Galerie obrázků'),
               onTap: () {
                 Navigator.pop(context);
                 _pickPhoto(ImageSource.gallery);
@@ -505,7 +500,6 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
                 ),
               ),
 
-            // TLAČÍTKO PRO VYFOCENÍ S ŽIVÝM NÁHLEDEM
             GestureDetector(
               onTap: _showImageSourceDialog,
               child: Container(
@@ -553,7 +547,6 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
             ),
             const SizedBox(height: 12),
 
-            // KATEGORIE
             const Text('2. Kategorie:', style: TextStyle(fontWeight: FontWeight.bold)),
             const SizedBox(height: 4),
             Wrap(
@@ -572,7 +565,6 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
             ),
             const SizedBox(height: 12),
 
-            // ZÁVAŽNOST
             const Text('3. Závažnost:', style: TextStyle(fontWeight: FontWeight.bold)),
             const SizedBox(height: 4),
             Row(
@@ -602,7 +594,6 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
             ),
             const SizedBox(height: 12),
 
-            // POZNÁMKA
             TextField(
               controller: _noteController,
               decoration: const InputDecoration(
@@ -613,8 +604,347 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
             ),
             const SizedBox(height: 16),
 
-            // ULOŽIT TLAČÍTKO
             ElevatedButton.icon(
               icon: const Icon(Icons.flash_on, size: 28),
               label: Text(
-                _editingIndex >= 0 ? 'ULOŽIT ZMĚNY NÁ
+                _editingIndex >= 0 ? 'ULOŽIT ZMĚNY NÁLEZU' : 'ULOŽIT A DALŠÍ NÁLEZ',
+                style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              ),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.green[700],
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(vertical: 16),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              ),
+              onPressed: _saveAndNext,
+            ),
+
+            const SizedBox(height: 20),
+            const Divider(thickness: 2),
+
+            Text(
+              'SEZNAM NÁLEZŮ (${globalFindings.length}):',
+              style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.blueGrey),
+            ),
+            const SizedBox(height: 8),
+
+            if (globalFindings.isEmpty)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 16.0),
+                child: Text('Zatím nebyly zadané žádné nálezy.', textAlign: TextAlign.center, style: TextStyle(color: Colors.grey)),
+              )
+            else
+              ListView.builder(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                itemCount: globalFindings.length,
+                itemBuilder: (context, index) {
+                  final item = globalFindings[index];
+                  final isCurrentlyEditing = _editingIndex == index;
+
+                  return Card(
+                    color: isCurrentlyEditing ? Colors.amber[50] : null,
+                    margin: const EdgeInsets.symmetric(vertical: 4),
+                    child: ListTile(
+                      dense: true,
+                      leading: item.photoBytes != null
+                          ? ClipRRect(
+                              borderRadius: BorderRadius.circular(4),
+                              child: Image.memory(item.photoBytes!, width: 40, height: 40, fit: BoxFit.cover),
+                            )
+                          : CircleAvatar(
+                              radius: 14,
+                              backgroundColor: item.severity == 'Vysoká'
+                                  ? Colors.red
+                                  : item.severity == 'Střední'
+                                      ? Colors.orange
+                                      : Colors.blue,
+                              child: Text('#${item.orderNumber}', style: const TextStyle(color: Colors.white, fontSize: 10)),
+                            ),
+                      title: Text('${item.category} • ${item.severity}', style: const TextStyle(fontWeight: FontWeight.bold)),
+                      subtitle: Text(item.description),
+                      onTap: () => _loadFindingIntoForm(index),
+                    ),
+                  );
+                },
+              ),
+
+            const SizedBox(height: 20),
+
+            ElevatedButton.icon(
+              icon: const Icon(Icons.check_circle_outline, size: 26),
+              label: Text(
+                'DOKONČIT INSPEKCI (${globalFindings.length} NÁLEZŮ)',
+                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+              ),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF0F172A),
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(vertical: 16),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              ),
+              onPressed: _finishInspection,
+            ),
+            const SizedBox(height: 20),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class ReportsHistoryScreen extends StatelessWidget {
+  const ReportsHistoryScreen({Key? key}) : super(key: key);
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Historie inspekčních reportů')),
+      body: savedReports.isEmpty
+          ? const Center(
+              child: Text('Zatím nebyly dokončeny žádné reporty.', style: TextStyle(color: Colors.grey)),
+            )
+          : ListView.builder(
+              itemCount: savedReports.length,
+              itemBuilder: (context, index) {
+                final report = savedReports[index];
+                return Card(
+                  margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  child: ListTile(
+                    leading: const CircleAvatar(
+                      backgroundColor: Color(0xFF0284C7),
+                      child: Icon(Icons.description, color: Colors.white),
+                    ),
+                    title: Text(report.locationName, style: const TextStyle(fontWeight: FontWeight.bold)),
+                    subtitle: Text('Počet nálezů: ${report.findings.length}\nDatum: ${report.date.day}.${report.date.month}.${report.date.year} ${report.date.hour}:${report.date.minute.toString().padLeft(2, '0')}'),
+                    isThreeLine: true,
+                    trailing: const Icon(Icons.arrow_forward_ios, size: 16),
+                    onTap: () {
+                      globalFindings = List.from(report.findings);
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (context) => InspectionModeScreen(locationName: report.locationName),
+                        ),
+                      );
+                    },
+                  ),
+                );
+              },
+            ),
+    );
+  }
+}
+
+class RevisionTableScreen extends StatefulWidget {
+  const RevisionTableScreen({Key? key}) : super(key: key);
+
+  @override
+  State<RevisionTableScreen> createState() => _RevisionTableScreenState();
+}
+
+class _RevisionTableScreenState extends State<RevisionTableScreen> {
+  void _editLegislation(Finding finding) {
+    TextEditingController legController = TextEditingController(
+      text: finding.legislation.isEmpty
+          ? getDefaultLegislation(finding.category)
+          : finding.legislation,
+    );
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Upravit legislativu (#${finding.orderNumber})'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Nález: ${finding.description}', style: const TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 12),
+            TextField(
+              controller: legController,
+              decoration: const InputDecoration(
+                labelText: 'Český zákon / norma',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Zrušit')),
+          ElevatedButton(
+            onPressed: () {
+              setState(() {
+                finding.legislation = legController.text;
+              });
+              Navigator.pop(context);
+            },
+            child: const Text('Uložit'),
+          )
+        ],
+      ),
+    );
+  }
+
+  void _generateReportPreview() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Row(
+          children: [
+            Icon(Icons.picture_as_pdf, color: Colors.red),
+            SizedBox(width: 8),
+            Text('GENERÁTOR REPORTU', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+          ],
+        ),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('PROTOKOL O INSPEKCI BOZP A PO', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF0284C7))),
+              const Divider(),
+              Text('Celkem nálezů: ${globalFindings.length}'),
+              Text('Datum vygenerování: ${DateTime.now().day}.${DateTime.now().month}.${DateTime.now().year}'),
+              const SizedBox(height: 12),
+              const Text('Obsah reportu ke stažení:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+              const SizedBox(height: 6),
+              Container(
+                height: 180,
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: Colors.grey[100],
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.grey[300]!),
+                ),
+                child: ListView.builder(
+                  shrinkWrap: true,
+                  itemCount: globalFindings.length,
+                  itemBuilder: (context, idx) {
+                    final f = globalFindings[idx];
+                    final leg = f.legislation.isEmpty ? getDefaultLegislation(f.category) : f.legislation;
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 4.0),
+                      child: Row(
+                        children: [
+                          if (f.photoBytes != null)
+                            Padding(
+                              padding: const EdgeInsets.only(right: 6.0),
+                              child: ClipRRect(
+                                borderRadius: BorderRadius.circular(4),
+                                child: Image.memory(f.photoBytes!, width: 30, height: 30, fit: BoxFit.cover),
+                              ),
+                            ),
+                          Expanded(
+                            child: Text(
+                              '• #${f.orderNumber} [${f.category}] ${f.description}\n   Norma: $leg',
+                              style: const TextStyle(fontSize: 11),
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Zavřít'),
+          ),
+          ElevatedButton.icon(
+            icon: const Icon(Icons.download),
+            label: const Text('STÁHNOUT REPORT (PDF)'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF0284C7),
+              foregroundColor: Colors.white,
+            ),
+            onPressed: () {
+              Navigator.pop(context);
+              showDialog(
+                context: context,
+                builder: (context) => AlertDialog(
+                  title: const Text('✅ Report Vygenerován!'),
+                  content: const Text('Inspekční protokol BOZP byl úspěšně připraven ke stažení nebo tisk do PDF.'),
+                  actions: [
+                    ElevatedButton(
+                      onPressed: () => Navigator.pop(context),
+                      child: const Text('OK'),
+                    )
+                  ],
+                ),
+              );
+            },
+          )
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text('Revize u stolu (${globalFindings.length} nálezů)')),
+      body: globalFindings.isEmpty
+          ? const Center(child: Text('Zatím nebyly zadané žádné nálezy.'))
+          : Column(
+              children: [
+                Expanded(
+                  child: ListView.builder(
+                    itemCount: globalFindings.length,
+                    itemBuilder: (context, index) {
+                      final finding = globalFindings[index];
+                      final activeLegislation = finding.legislation.isEmpty
+                          ? getDefaultLegislation(finding.category)
+                          : finding.legislation;
+
+                      return Card(
+                        margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                        child: ListTile(
+                          leading: finding.photoBytes != null
+                              ? ClipRRect(
+                                  borderRadius: BorderRadius.circular(4),
+                                  child: Image.memory(finding.photoBytes!, width: 40, height: 40, fit: BoxFit.cover),
+                                )
+                              : CircleAvatar(
+                                  backgroundColor: finding.severity == 'Vysoká'
+                                      ? Colors.red
+                                      : finding.severity == 'Střední'
+                                          ? Colors.orange
+                                          : Colors.blue,
+                                  child: Text('#${finding.orderNumber}', style: const TextStyle(color: Colors.white)),
+                                ),
+                          title: Text('${finding.category} • ${finding.severity} závažnost', style: const TextStyle(fontWeight: FontWeight.bold)),
+                          subtitle: Text('${finding.description}\n📜 Norma: $activeLegislation'),
+                          trailing: const Icon(Icons.edit, color: Color(0xFF0284C7)),
+                          isThreeLine: true,
+                          onTap: () => _editLegislation(finding),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: ElevatedButton.icon(
+                    icon: const Icon(Icons.print, size: 28),
+                    label: const Text('GENERATOVAT REPORT (PDF / EXPORT)', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.green[700],
+                      foregroundColor: Colors.white,
+                      minimumSize: const Size(double.infinity, 54),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    ),
+                    onPressed: _generateReportPreview,
+                  ),
+                ),
+              ],
+            ),
+    );
+  }
+}

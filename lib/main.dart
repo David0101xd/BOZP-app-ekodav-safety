@@ -32,31 +32,31 @@ class EkodavSafetyApp extends StatelessWidget {
 }
 
 // -----------------------------------------------------------------------------
-// POMOCNÁ FUNKCE PRO AUTOMATICKÉ URČENÍ LEGISLATIVY
+// POMOCNÁ FUNKCE PRO LEGISLATIVU
 // -----------------------------------------------------------------------------
 String getDefaultLegislation(String category) {
   switch (category) {
     case 'BOZP':
-      return 'Zákoník práce č. 262/2006 Sb., NV č. 101/2005 Sb.';
+      return 'Zakonik prace c. 262/2006 Sb., NV c. 101/2005 Sb.';
     case 'PO':
-      return 'Zákon č. 133/1985 Sb. o PO, Vyhláška č. 246/2001 Sb.';
+      return 'Zakon c. 133/1985 Sb. o PO, Vyhlaska c. 246/2001 Sb.';
     case 'Životní prostředí':
-      return 'Zákon č. 541/2020 Sb. (odpady), Zákon č. 201/2012 Sb.';
+      return 'Zakon c. 541/2020 Sb. (odpady), Zakon c. 201/2012 Sb.';
     case 'Technické normy':
-      return 'NV č. 378/2001 Sb. (strojní zařízení), ČSN normy';
+      return 'NV c. 378/2001 Sb. (strojni zarizeni), CSN normy';
     case 'Revize a kontroly':
-      return 'NV č. 190/2022 Sb., NV č. 194/2022 Sb. (VTZ)';
+      return 'NV c. 190/2022 Sb., NV c. 194/2022 Sb. (VTZ)';
     case 'Regulatorní školení':
-      return 'Zákoník práce č. 262/2006 Sb. (§ 103 odst. 2)';
+      return 'Zakonik prace c. 262/2006 Sb. (103 odst. 2)';
     case 'ISO':
-      return 'ČSN EN ISO 45001 / ISO 14001';
+      return 'CSN EN ISO 45001 / ISO 14001';
     default:
-      return 'Zákoník práce č. 262/2006 Sb.';
+      return 'Zakonik prace c. 262/2006 Sb.';
   }
 }
 
 // -----------------------------------------------------------------------------
-// DATOVÉ MODELY (NÁLEZ A REPORT)
+// DATOVÉ MODELY
 // -----------------------------------------------------------------------------
 class Finding {
   final String id;
@@ -129,7 +129,7 @@ class _HomeScreenState extends State<HomeScreen> {
             const Icon(Icons.shield_outlined, size: 80, color: Color(0xFF0284C7)),
             const SizedBox(height: 10),
             const Text(
-              'Inspekce BOZP a PO v terénu',
+              'Inspekce BOZP a PO v terenu',
               textAlign: TextAlign.center,
               style: TextStyle(fontSize: 18, fontWeight: FontWeight.w500, color: Colors.grey),
             ),
@@ -137,7 +137,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
             ElevatedButton.icon(
               icon: const Icon(Icons.add_a_photo, size: 26),
-              label: const Text('NOVÝ REPORT (V TERÉNU)', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+              label: const Text('NOVY REPORT (V TERENU)', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
               style: ElevatedButton.styleFrom(
                 backgroundColor: const Color(0xFF0284C7),
                 foregroundColor: Colors.white,
@@ -156,7 +156,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
             OutlinedButton.icon(
               icon: const Icon(Icons.table_chart, size: 26),
-              label: Text('REVIZE U STOLU (${globalFindings.length} NÁLEZŮ)', style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+              label: Text('REVIZE U STOLU (${globalFindings.length} NALEZU)', style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
               style: OutlinedButton.styleFrom(
                 padding: const EdgeInsets.symmetric(vertical: 16),
                 side: const BorderSide(color: Color(0xFF0F172A), width: 2),
@@ -174,7 +174,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
             OutlinedButton.icon(
               icon: const Icon(Icons.folder_open, size: 26),
-              label: Text('HISTORIE REPORTŮ (${savedReports.length})', style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+              label: Text('HISTORIE REPORTU (${savedReports.length})', style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
               style: OutlinedButton.styleFrom(
                 padding: const EdgeInsets.symmetric(vertical: 16),
                 foregroundColor: Colors.grey[800],
@@ -209,32 +209,32 @@ class NewReportScreen extends StatefulWidget {
 class _NewReportScreenState extends State<NewReportScreen> {
   final TextEditingController _locationController = TextEditingController();
   final List<String> _historyLocations = [
-    'Čerpací stanice Benzina - Praha 4',
-    'Skladová hala B - Brno',
-    'Továrna Unipetrol - Litvínov'
+    'Cerpaci stanice Benzina - Praha 4',
+    'Skladova hala B - Brno',
+    'Tovarna Unipetrol - Litvinov'
   ];
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Zadání lokace')),
+      appBar: AppBar(title: const Text('Zadani lokace')),
       body: Padding(
         padding: const EdgeInsets.all(20.0),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            const Text('Zadejte název lokace / pracoviště:', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+            const Text('Zadejte nazev lokace / pracoviste:', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
             const SizedBox(height: 10),
             TextField(
               controller: _locationController,
               decoration: InputDecoration(
-                hintText: 'např. Čerpací stanice, hala, budova...',
+                hintText: 'napr. Cerpaci stanice, hala, budova...',
                 border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
                 prefixIcon: const Icon(Icons.location_on),
               ),
             ),
             const SizedBox(height: 20),
-            const Text('Nebo vyberte z nedávných navštívených:', style: TextStyle(color: Colors.grey)),
+            const Text('Nebo vyberte z nedavnych navstivenych:', style: TextStyle(color: Colors.grey)),
             const SizedBox(height: 8),
             Wrap(
               spacing: 8,
@@ -248,7 +248,7 @@ class _NewReportScreenState extends State<NewReportScreen> {
             const Spacer(),
             ElevatedButton.icon(
               icon: const Icon(Icons.play_arrow, size: 28),
-              label: const Text('ZAHÁJIT INSPEKCI', style: TextStyle(fontSize: 18)),
+              label: const Text('ZAHAJIT INSPEKCI', style: TextStyle(fontSize: 18)),
               style: ElevatedButton.styleFrom(
                 backgroundColor: Colors.green[700],
                 foregroundColor: Colors.white,
@@ -284,7 +284,7 @@ class InspectionModeScreen extends StatefulWidget {
 class _InspectionModeScreenState extends State<InspectionModeScreen> {
   Uint8List? _currentPhotoBytes;
   String _selectedCategory = 'BOZP';
-  String _selectedSeverity = 'Střední';
+  String _selectedSeverity = 'Stredni';
   final TextEditingController _noteController = TextEditingController();
   final ImagePicker _picker = ImagePicker();
 
@@ -292,12 +292,12 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
   String _statusMessage = '';
 
   final List<String> _categories = [
-    'BOZP', 'PO', 'Životní prostředí',
-    'Technické normy', 'Revize a kontroly',
-    'Regulatorní školení', 'ISO'
+    'BOZP', 'PO', 'Zivotni prostredi',
+    'Technicke normy', 'Revize a kontroly',
+    'Regulatorni skoleni', 'ISO'
   ];
 
-  final List<String> _severities = ['Vysoká', 'Střední', 'Nízká', 'Doporučení'];
+  final List<String> _severities = ['Vysoka', 'Stredni', 'Nizka', 'Doporuceni'];
 
   Future<void> _pickPhoto(ImageSource source) async {
     try {
@@ -311,7 +311,7 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
         final bytes = await pickedFile.readAsBytes();
         setState(() {
           _currentPhotoBytes = bytes;
-          _statusMessage = '📷 Fotografie úspěšně načtena!';
+          _statusMessage = '📷 Fotografie uspesne nactena!';
         });
       }
     } catch (e) {
@@ -321,12 +321,12 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
           final bytes = await galleryFile.readAsBytes();
           setState(() {
             _currentPhotoBytes = bytes;
-            _statusMessage = '📷 Fotografie načtena z galerie!';
+            _statusMessage = '📷 Fotografie nactena z galerie!';
           });
         }
       } catch (err) {
         setState(() {
-          _statusMessage = '⚠️ Povolte v prohlížeči přístup k fotoaparátu.';
+          _statusMessage = '⚠️ Povolte v prohlizeci pristup k fotoaparatu.';
         });
       }
     }
@@ -355,7 +355,7 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
             ),
             ListTile(
               leading: const Icon(Icons.photo_library, color: Colors.green, size: 30),
-              title: const Text('Galerie obrázků'),
+              title: const Text('Galerie obrazku'),
               onTap: () {
                 Navigator.pop(context);
                 _pickPhoto(ImageSource.gallery);
@@ -386,20 +386,20 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
         final existing = globalFindings[_editingIndex];
         existing.category = _selectedCategory;
         existing.severity = _selectedSeverity;
-        existing.description = _noteController.text.isEmpty ? 'Nález bez poznámky' : _noteController.text;
+        existing.description = _noteController.text.isEmpty ? 'Nalez bez poznamky' : _noteController.text;
         existing.photoBytes = _currentPhotoBytes;
         existing.isPhotoTaken = _currentPhotoBytes != null;
         if (existing.legislation.isEmpty) {
           existing.legislation = autoLegislation;
         }
-        _statusMessage = '⚡ Nález #${existing.orderNumber} aktualizován!';
+        _statusMessage = '⚡ Nalez #${existing.orderNumber} aktualizovan!';
       } else {
         final newFinding = Finding(
           id: DateTime.now().millisecondsSinceEpoch.toString(),
           orderNumber: globalFindings.length + 1,
           category: _selectedCategory,
           severity: _selectedSeverity,
-          description: _noteController.text.isEmpty ? 'Nález bez poznámky' : _noteController.text,
+          description: _noteController.text.isEmpty ? 'Nalez bez poznamky' : _noteController.text,
           legislation: autoLegislation,
           photoBytes: _currentPhotoBytes,
           isPhotoTaken: _currentPhotoBytes != null,
@@ -407,7 +407,7 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
         );
 
         globalFindings.add(newFinding);
-        _statusMessage = '⚡ Nález #${newFinding.orderNumber} uložen!';
+        _statusMessage = '⚡ Nalez #${newFinding.orderNumber} ulozen!';
       }
 
       _resetFormToNew();
@@ -419,7 +419,7 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
     _currentPhotoBytes = null;
     _noteController.clear();
     _selectedCategory = 'BOZP';
-    _selectedSeverity = 'Střední';
+    _selectedSeverity = 'Stredni';
   }
 
   void _loadFindingIntoForm(int index) {
@@ -431,7 +431,7 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
         _selectedCategory = finding.category;
         _selectedSeverity = finding.severity;
         _noteController.text = finding.description;
-        _statusMessage = 'Načten nález #${finding.orderNumber} k úpravě';
+        _statusMessage = 'Nacten nalez #${finding.orderNumber} k uprave';
       });
     }
   }
@@ -457,14 +457,14 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text('Inspekce: ${widget.locationName}', style: const TextStyle(fontSize: 16)),
-            Text('Uloženo nálezů: ${globalFindings.length}', style: const TextStyle(fontSize: 12, color: Colors.greenAccent)),
+            Text('Ulozeno nalezu: ${globalFindings.length}', style: const TextStyle(fontSize: 12, color: Colors.greenAccent)),
           ],
         ),
         actions: [
           IconButton(
             icon: const Icon(Icons.check_circle, color: Colors.greenAccent, size: 30),
             onPressed: _finishInspection,
-            tooltip: 'Dokončit inspekci',
+            tooltip: 'Dokoncit inspekci',
           )
         ],
       ),
@@ -507,11 +507,11 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
                     const Icon(Icons.edit, color: Colors.amber),
                     const SizedBox(width: 8),
                     Expanded(
-                      child: Text('Upravujete Nález #${globalFindings[_editingIndex].orderNumber}'),
+                      child: Text('Upravujete Nalez #${globalFindings[_editingIndex].orderNumber}'),
                     ),
                     TextButton(
                       onPressed: () => setState(() => _resetFormToNew()),
-                      child: const Text('Zrušit'),
+                      child: const Text('Zrusit'),
                     )
                   ],
                 ),
@@ -555,8 +555,8 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
                           children: [
                             Icon(Icons.camera_alt_outlined, size: 48, color: Color(0xFF0284C7)),
                             SizedBox(height: 8),
-                            Text('1. ŤUKNI PRO VYFOCENÍ / VYBRÁNÍ FOTKY', style: TextStyle(color: Color(0xFF0284C7), fontWeight: FontWeight.bold, fontSize: 13)),
-                            Text('(Aplikace otevře mobilní fotoaparát)', style: TextStyle(color: Colors.grey, fontSize: 11)),
+                            Text('1. TUKNI PRO VYFOCENI / VYBRANI FOTKY', style: TextStyle(color: Color(0xFF0284C7), fontWeight: FontWeight.bold, fontSize: 13)),
+                            Text('(Aplikace otevre mobilni fotoaparat)', style: TextStyle(color: Colors.grey, fontSize: 11)),
                           ],
                         ),
                 ),
@@ -582,16 +582,16 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
             ),
             const SizedBox(height: 12),
 
-            const Text('3. Závažnost:', style: TextStyle(fontWeight: FontWeight.bold)),
+            const Text('3. Zavaznost:', style: TextStyle(fontWeight: FontWeight.bold)),
             const SizedBox(height: 4),
             Row(
               children: _severities.map((sev) {
                 final isSelected = _selectedSeverity == sev;
                 Color color = Colors.grey;
-                if (sev == 'Vysoká') color = Colors.red;
-                if (sev == 'Střední') color = Colors.orange;
-                if (sev == 'Nízká') color = Colors.amber;
-                if (sev == 'Doporučení') color = Colors.blue;
+                if (sev == 'Vysoka') color = Colors.red;
+                if (sev == 'Stredni') color = Colors.orange;
+                if (sev == 'Nizka') color = Colors.amber;
+                if (sev == 'Doporuceni') color = Colors.blue;
 
                 return Expanded(
                   child: Padding(
@@ -614,7 +614,7 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
             TextField(
               controller: _noteController,
               decoration: const InputDecoration(
-                labelText: '4. Popis / Hlasová poznámka',
+                labelText: '4. Popis / Hlasova poznamka',
                 border: OutlineInputBorder(),
                 suffixIcon: Icon(Icons.mic, color: Colors.red),
               ),
@@ -624,7 +624,7 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
             ElevatedButton.icon(
               icon: const Icon(Icons.flash_on, size: 28),
               label: Text(
-                _editingIndex >= 0 ? 'ULOŽIT ZMĚNY NÁLEZU' : 'ULOŽIT A DALŠÍ NÁLEZ',
+                _editingIndex >= 0 ? 'ULOZIT ZMENY NALEZU' : 'ULOZIT A DALSÍ NALEZ',
                 style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
               ),
               style: ElevatedButton.styleFrom(
@@ -640,7 +640,7 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
             const Divider(thickness: 2),
 
             Text(
-              'SEZNAM NÁLEZŮ (${globalFindings.length}):',
+              'SEZNAM NALEZU (${globalFindings.length}):',
               style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.blueGrey),
             ),
             const SizedBox(height: 8),
@@ -648,7 +648,7 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
             if (globalFindings.isEmpty)
               const Padding(
                 padding: EdgeInsets.symmetric(vertical: 16.0),
-                child: Text('Zatím nebyly zadané žádné nálezy.', textAlign: TextAlign.center, style: TextStyle(color: Colors.grey)),
+                child: Text('Zatim nebyly zadane zadne nalezy.', textAlign: TextAlign.center, style: TextStyle(color: Colors.grey)),
               )
             else
               ListView.builder(
@@ -671,9 +671,9 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
                             )
                           : CircleAvatar(
                               radius: 14,
-                              backgroundColor: item.severity == 'Vysoká'
+                              backgroundColor: item.severity == 'Vysoka'
                                   ? Colors.red
-                                  : item.severity == 'Střední'
+                                  : item.severity == 'Stredni'
                                       ? Colors.orange
                                       : Colors.blue,
                               child: Text('#${item.orderNumber}', style: const TextStyle(color: Colors.white, fontSize: 10)),
@@ -691,7 +691,7 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
             ElevatedButton.icon(
               icon: const Icon(Icons.check_circle_outline, size: 26),
               label: Text(
-                'DOKONČIT INSPEKCI (${globalFindings.length} NÁLEZŮ)',
+                'DOKONCIT INSPEKCI (${globalFindings.length} NALEZU)',
                 style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
               ),
               style: ElevatedButton.styleFrom(
@@ -716,10 +716,10 @@ class ReportsHistoryScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Historie inspekčních reportů')),
+      appBar: AppBar(title: const Text('Historie inspekcnich reportu')),
       body: savedReports.isEmpty
           ? const Center(
-              child: Text('Zatím nebyly dokončeny žádné reporty.', style: TextStyle(color: Colors.grey)),
+              child: Text('Zatim nebyly dokonceny zadne reporty.', style: TextStyle(color: Colors.grey)),
             )
           : ListView.builder(
               itemCount: savedReports.length,
@@ -733,7 +733,7 @@ class ReportsHistoryScreen extends StatelessWidget {
                       child: Icon(Icons.description, color: Colors.white),
                     ),
                     title: Text(report.locationName, style: const TextStyle(fontWeight: FontWeight.bold)),
-                    subtitle: Text('Počet nálezů: ${report.findings.length}\nDatum: ${report.date.day}.${report.date.month}.${report.date.year} ${report.date.hour}:${report.date.minute.toString().padLeft(2, '0')}'),
+                    subtitle: Text('Pocet nalezu: ${report.findings.length}\nDatum: ${report.date.day}.${report.date.month}.${report.date.year} ${report.date.hour}:${report.date.minute.toString().padLeft(2, '0')}'),
                     isThreeLine: true,
                     trailing: const Icon(Icons.arrow_forward_ios, size: 16),
                     onTap: () {
@@ -754,7 +754,7 @@ class ReportsHistoryScreen extends StatelessWidget {
 }
 
 // -----------------------------------------------------------------------------
-// 5. REVIZE U STOLU + REÁLNÝ GENERÁTOR A KE STAŽENÍ PDF PROTOKOLU
+// 5. REVIZE U STOLU A SPOLEHLIVÉ GENEROVÁNÍ PDF
 // -----------------------------------------------------------------------------
 class RevisionTableScreen extends StatefulWidget {
   const RevisionTableScreen({Key? key}) : super(key: key);
@@ -779,19 +779,19 @@ class _RevisionTableScreenState extends State<RevisionTableScreen> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Nález: ${finding.description}', style: const TextStyle(fontWeight: FontWeight.bold)),
+            Text('Nalez: ${finding.description}', style: const TextStyle(fontWeight: FontWeight.bold)),
             const SizedBox(height: 12),
             TextField(
               controller: legController,
               decoration: const InputDecoration(
-                labelText: 'Český zákon / norma',
+                labelText: 'Cesky zakon / norma',
                 border: OutlineInputBorder(),
               ),
             ),
           ],
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Zrušit')),
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Zrusit')),
           ElevatedButton(
             onPressed: () {
               setState(() {
@@ -799,28 +799,20 @@ class _RevisionTableScreenState extends State<RevisionTableScreen> {
               });
               Navigator.pop(context);
             },
-            child: const Text('Uložit'),
+            child: const Text('Ulozit'),
           )
         ],
       ),
     );
   }
 
-  // REÁLNÉ VYGENEROVÁNÍ A KONTROLA PDF PROTOKOLU
+  // 100% BEZPEČNÉ VYGENEROVÁNÍ A ULOŽENÍ / STAŽENÍ PDF PROTOKOLU
   Future<void> _generateAndDownloadPdf() async {
     final pdf = pw.Document();
-
-    // Načtení české diakritiky z Google Fonts
-    final fontRegular = await PdfGoogleFonts.robotoRegular();
-    final fontBold = await PdfGoogleFonts.robotoBold();
 
     pdf.addPage(
       pw.MultiPage(
         pageFormat: PdfPageFormat.a4,
-        theme: pw.ThemeData.withFont(
-          base: fontRegular,
-          bold: fontBold,
-        ),
         build: (pw.Context context) {
           return [
             pw.Header(
@@ -837,7 +829,7 @@ class _RevisionTableScreenState extends State<RevisionTableScreen> {
               ),
             ),
             pw.SizedBox(height: 10),
-            pw.Text('Celkový počet nálezů: ${globalFindings.length}', style: const pw.TextStyle(fontSize: 12)),
+            pw.Text('Celkovy pocet nalezu: ${globalFindings.length}', style: const pw.TextStyle(fontSize: 12)),
             pw.Divider(),
             pw.SizedBox(height: 10),
             ...globalFindings.map((f) {
@@ -855,14 +847,14 @@ class _RevisionTableScreenState extends State<RevisionTableScreen> {
                     pw.Row(
                       mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
                       children: [
-                        pw.Text('Nález #${f.orderNumber} • ${f.category}', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 13)),
-                        pw.Text('Závažnost: ${f.severity}', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, color: f.severity == 'Vysoká' ? PdfColors.red : PdfColors.orange800)),
+                        pw.Text('Nalez #${f.orderNumber} - ${f.category}', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 13)),
+                        pw.Text('Zavaznost: ${f.severity}', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, color: f.severity == 'Vysoka' ? PdfColors.red : PdfColors.orange800)),
                       ],
                     ),
                     pw.SizedBox(height: 4),
                     pw.Text('Popis: ${f.description}'),
                     pw.SizedBox(height: 4),
-                    pw.Text('Zákon / Norma: $leg', style: pw.TextStyle(color: PdfColors.blue900, fontWeight: pw.FontWeight.bold)),
+                    pw.Text('Zakon / Norma: $leg', style: pw.TextStyle(color: PdfColors.blue900, fontWeight: pw.FontWeight.bold)),
                     if (f.photoBytes != null) ...[
                       pw.SizedBox(height: 8),
                       pw.Container(
@@ -879,9 +871,11 @@ class _RevisionTableScreenState extends State<RevisionTableScreen> {
       ),
     );
 
-    await Printing.layoutPdf(
-      onLayout: (PdfPageFormat format) async => pdf.save(),
-      name: 'Protokol_BOZP_${DateTime.now().day}_${DateTime.now().month}_${DateTime.now().year}.pdf',
+    // Přímé stažení souboru / nabídka sdílení
+    final pdfBytes = await pdf.save();
+    await Printing.sharePdf(
+      bytes: pdfBytes,
+      filename: 'Protokol_BOZP_${DateTime.now().day}_${DateTime.now().month}_${DateTime.now().year}.pdf',
     );
   }
 
@@ -894,7 +888,7 @@ class _RevisionTableScreenState extends State<RevisionTableScreen> {
           children: [
             Icon(Icons.picture_as_pdf, color: Colors.red),
             SizedBox(width: 8),
-            Text('GENERÁTOR REPORTU', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            Text('GENERATOR REPORTU', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
           ],
         ),
         content: SizedBox(
@@ -905,10 +899,10 @@ class _RevisionTableScreenState extends State<RevisionTableScreen> {
             children: [
               const Text('PROTOKOL O INSPEKCI BOZP A PO', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF0284C7))),
               const Divider(),
-              Text('Celkem nálezů: ${globalFindings.length}'),
-              Text('Datum vygenerování: ${DateTime.now().day}.${DateTime.now().month}.${DateTime.now().year}'),
+              Text('Celkem nalezu: ${globalFindings.length}'),
+              Text('Datum vygenerovani: ${DateTime.now().day}.${DateTime.now().month}.${DateTime.now().year}'),
               const SizedBox(height: 12),
-              const Text('Obsah reportu ke stažení:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+              const Text('Obsah reportu ke stazeni:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
               const SizedBox(height: 6),
               Container(
                 height: 180,
@@ -954,11 +948,11 @@ class _RevisionTableScreenState extends State<RevisionTableScreen> {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text('Zavřít'),
+            child: const Text('Zavrit'),
           ),
           ElevatedButton.icon(
             icon: const Icon(Icons.download),
-            label: const Text('STÁHNOUT REPORT (PDF)'),
+            label: const Text('STAHNOUT REPORT (PDF)'),
             style: ElevatedButton.styleFrom(
               backgroundColor: const Color(0xFF0284C7),
               foregroundColor: Colors.white,
@@ -976,9 +970,9 @@ class _RevisionTableScreenState extends State<RevisionTableScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: Text('Revize u stolu (${globalFindings.length} nálezů)')),
+      appBar: AppBar(title: Text('Revize u stolu (${globalFindings.length} nalezu)')),
       body: globalFindings.isEmpty
-          ? const Center(child: Text('Zatím nebyly zadané žádné nálezy.'))
+          ? const Center(child: Text('Zatim nebyly zadane zadne nalezy.'))
           : Column(
               children: [
                 Expanded(
@@ -999,14 +993,14 @@ class _RevisionTableScreenState extends State<RevisionTableScreen> {
                                   child: Image.memory(finding.photoBytes!, width: 40, height: 40, fit: BoxFit.cover),
                                 )
                               : CircleAvatar(
-                                  backgroundColor: finding.severity == 'Vysoká'
+                                  backgroundColor: finding.severity == 'Vysoka'
                                       ? Colors.red
-                                      : finding.severity == 'Střední'
+                                      : finding.severity == 'Stredni'
                                           ? Colors.orange
                                           : Colors.blue,
                                   child: Text('#${finding.orderNumber}', style: const TextStyle(color: Colors.white)),
                                 ),
-                          title: Text('${finding.category} • ${finding.severity} závažnost', style: const TextStyle(fontWeight: FontWeight.bold)),
+                          title: Text('${finding.category} • ${finding.severity} zavaznost', style: const TextStyle(fontWeight: FontWeight.bold)),
                           subtitle: Text('${finding.description}\n📜 Norma: $activeLegislation'),
                           trailing: const Icon(Icons.edit, color: Color(0xFF0284C7)),
                           isThreeLine: true,

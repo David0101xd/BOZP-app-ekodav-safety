@@ -1,4 +1,3 @@
-// Aktualizovana verze aplikace
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
@@ -41,6 +40,7 @@ Future<void> openEkodavWeb() async {
 }
 
 Future<void> openGoogleMaps(String gpsCoords) async {
+  final cleanCoords = gpsCoords.replaceAll('GPS:', '').trim();
   final Uri url = Uri.parse('https://www.google.com/maps/search/?api=1&query=$cleanCoords');
   if (!await launchUrl(url, mode: LaunchMode.externalApplication)) {
     debugPrint('Could not launch $url');
@@ -1117,7 +1117,7 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
           orderNumber: globalFindings.length + 1,
           category: _selectedCategory,
           severity: _selectedSeverity,
-          description: _noteController.text.isEmpty ? 'Nález bez poznámky' : _noteController.text;
+          description: _noteController.text.isEmpty ? 'Nález bez poznámky' : _noteController.text,
           locationDetail: placeText,
           legislation: matchedLegislation,
           photoBytes: _currentPhotoBytes,

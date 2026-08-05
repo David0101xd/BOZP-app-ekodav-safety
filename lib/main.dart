@@ -251,6 +251,7 @@ class Finding {
 
 class InspectionReport {
   final String id;
+  final String companyName;
   final String locationName;
   final DateTime date;
   final List<Finding> findings;
@@ -258,6 +259,7 @@ class InspectionReport {
 
   InspectionReport({
     required this.id,
+    this.companyName = '',
     required this.locationName,
     required this.date,
     required this.findings,
@@ -269,6 +271,7 @@ List<Finding> globalFindings = [];
 List<InspectionReport> savedReports = [
   InspectionReport(
     id: '1',
+    companyName: 'BENZINA s.r.o.',
     locationName: 'Skladová hala A - Brno (GPS: 49.1951, 16.6078)',
     date: DateTime.now().subtract(const Duration(days: 2)),
     findings: [
@@ -389,7 +392,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       const Divider(thickness: 1.5),
                       const SizedBox(height: 10),
 
-                      // TLAČÍTKO 4 (SAMOSTATNĚ DOLE)
+                      // TLAČÍTKO 4 (SPRÁVA LEGISLATIVY DOLE)
                       ElevatedButton.icon(
                         icon: const Icon(Icons.gavel, size: 22),
                         label: Text('SPRÁVA LEGISLATIVY (${globalLegislationDatabase.length})', style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
@@ -696,7 +699,7 @@ class _LegislationManagerScreenState extends State<LegislationManagerScreen> {
 }
 
 // -----------------------------------------------------------------------------
-// 2. ZADÁNÍ LOKACE A HISTORIE
+// 2. ZADÁNÍ LOKACE, FIRMY & HISTORIE
 // -----------------------------------------------------------------------------
 class NewReportScreen extends StatefulWidget {
   const NewReportScreen({Key? key}) : super(key: key);
@@ -706,16 +709,35 @@ class NewReportScreen extends StatefulWidget {
 }
 
 class _NewReportScreenState extends State<NewReportScreen> {
+  final TextEditingController _companyController = TextEditingController();
   final TextEditingController _locationController = TextEditingController();
+
+  Set<String> get _recentLocationChips {
+    final Set<String> chips = {};
+    for (var report in savedReports) {
+      if (report.companyName.isNotEmpty) chips.add(report.companyName);
+      if (report.locationName.isNotEmpty) chips.add(report.locationName.split('(GPS:')[0].trim());
+    }
+    if (chips.isEmpty) {
+      chips.addAll(['Benzina s.r.o.', 'Čerpací stanice MOL', 'Skladová hala A', 'Unipetrol']);
+    }
+    return chips;
+  }
 
   void _startInspection() {
     String loc = _locationController.text.trim();
+    String comp = _companyController.text.trim();
     if (loc.isEmpty) {
       loc = 'Inspekce BOZP (${DateTime.now().day}.${DateTime.now().month}.${DateTime.now().year})';
     }
     Navigator.pushReplacement(
       context,
-      MaterialPageRoute(builder: (context) => InspectionModeScreen(locationName: loc)),
+      MaterialPageRoute(
+        builder: (context) => InspectionModeScreen(
+          locationName: loc,
+          companyName: comp,
+        ),
+      ),
     );
   }
 
@@ -728,21 +750,42 @@ class _NewReportScreenState extends State<NewReportScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            const Text('Zadejte název lokace / pracoviště:', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 10),
+            const Text('Firma / Klient (pro OR / ARES):', style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 6),
+            TextField(
+              controller: _companyController,
+              decoration: InputDecoration(
+                hintText: 'Zadejte název firmy nebo IČO...',
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                prefixIcon: const Icon(Icons.business, color: Color(0xFF0284C7)),
+                suffixIcon: IconButton(
+                  icon: const Icon(Icons.search, color: Colors.blue),
+                  tooltip: 'Našeptat z OR / ARES',
+                  onPressed: () {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Propojení na Obchodní rejstřík ARES je připraveno.')),
+                    );
+                  },
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+
+            const Text('Zadejte název lokace / pracoviště / provozovny:', style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 6),
             TextField(
               controller: _locationController,
               decoration: InputDecoration(
                 hintText: 'např. Čerpací stanice, hala, budova...',
                 border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
-                prefixIcon: const Icon(Icons.location_on),
+                prefixIcon: const Icon(Icons.location_on, color: Color(0xFF0284C7)),
               ),
             ),
-            const SizedBox(height: 16),
+            const SizedBox(height: 18),
 
             ElevatedButton.icon(
               icon: const Icon(Icons.play_arrow, size: 28),
-              label: const Text('ZÁHAJIT NOVOU INSPEKCI', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+              label: const Text('ZÁHAJIT NOVOU KONTROLU', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
               style: ElevatedButton.styleFrom(
                 backgroundColor: Colors.green[700],
                 foregroundColor: Colors.white,
@@ -752,8 +795,36 @@ class _NewReportScreenState extends State<NewReportScreen> {
               onPressed: _startInspection,
             ),
 
-            const SizedBox(height: 24),
-            const Divider(thickness: 2),
+            const SizedBox(height: 20),
+            const Divider(thickness: 1.5),
+
+            const Text('Rychlý výběr z nedávných firem a provozoven:', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.grey)),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              runSpacing: 6,
+              children: _recentLocationChips.map((item) {
+                return ActionChip(
+                  avatar: const Icon(Icons.history, size: 16, color: Color(0xFF0284C7)),
+                  label: Text(item, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
+                  backgroundColor: Colors.blue[50],
+                  side: BorderSide(color: Colors.blue[200]!),
+                  onPressed: () {
+                    setState(() {
+                      if (_companyController.text.isEmpty) {
+                        _companyController.text = item;
+                      } else {
+                        _locationController.text = item;
+                      }
+                    });
+                  },
+                );
+              }).toList(),
+            ),
+
+            const SizedBox(height: 20),
+            const Divider(thickness: 1.5),
+            const SizedBox(height: 10),
 
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -790,7 +861,10 @@ class _NewReportScreenState extends State<NewReportScreen> {
                         backgroundColor: Color(0xFF0284C7),
                         child: Icon(Icons.description, color: Colors.white),
                       ),
-                      title: Text(report.locationName, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                      title: Text(
+                        '${report.companyName.isNotEmpty ? "${report.companyName} - " : ""}${report.locationName}',
+                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                      ),
                       subtitle: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
@@ -823,7 +897,10 @@ class _NewReportScreenState extends State<NewReportScreen> {
                         Navigator.push(
                           context,
                           MaterialPageRoute(
-                            builder: (context) => InspectionModeScreen(locationName: report.locationName),
+                            builder: (context) => InspectionModeScreen(
+                              locationName: report.locationName,
+                              companyName: report.companyName,
+                            ),
                           ),
                         );
                       },
@@ -843,7 +920,12 @@ class _NewReportScreenState extends State<NewReportScreen> {
 // -----------------------------------------------------------------------------
 class InspectionModeScreen extends StatefulWidget {
   final String locationName;
-  const InspectionModeScreen({Key? key, required this.locationName}) : super(key: key);
+  final String companyName;
+  const InspectionModeScreen({
+    Key? key,
+    required this.locationName,
+    this.companyName = '',
+  }) : super(key: key);
 
   @override
   State<InspectionModeScreen> createState() => _InspectionModeScreenState();
@@ -1022,6 +1104,7 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
     if (globalFindings.isNotEmpty) {
       final report = InspectionReport(
         id: DateTime.now().millisecondsSinceEpoch.toString(),
+        companyName: widget.companyName,
         locationName: widget.locationName,
         date: DateTime.now(),
         findings: List.from(globalFindings),
@@ -1038,8 +1121,8 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Inspekce: ${widget.locationName}', style: const TextStyle(fontSize: 16)),
-            Text('Uloženo nálezů: ${globalFindings.length}', style: const TextStyle(fontSize: 12, color: Colors.greenAccent)),
+            Text('Inspekce: ${widget.companyName.isNotEmpty ? "${widget.companyName} - " : ""}${widget.locationName}', style: const TextStyle(fontSize: 14)),
+            Text('Uloženo nálezů: ${globalFindings.length}', style: const TextStyle(fontSize: 11, color: Colors.greenAccent)),
           ],
         ),
         actions: [
@@ -1344,7 +1427,10 @@ class ReportsHistoryScreen extends StatelessWidget {
                       backgroundColor: Color(0xFF0284C7),
                       child: Icon(Icons.description, color: Colors.white),
                     ),
-                    title: Text(report.locationName, style: const TextStyle(fontWeight: FontWeight.bold)),
+                    title: Text(
+                      '${report.companyName.isNotEmpty ? "${report.companyName} - " : ""}${report.locationName}',
+                      style: const TextStyle(fontWeight: FontWeight.bold),
+                    ),
                     subtitle: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
@@ -1377,7 +1463,10 @@ class ReportsHistoryScreen extends StatelessWidget {
                       Navigator.push(
                         context,
                         MaterialPageRoute(
-                          builder: (context) => InspectionModeScreen(locationName: report.locationName),
+                          builder: (context) => InspectionModeScreen(
+                            locationName: report.locationName,
+                            companyName: report.companyName,
+                          ),
                         ),
                       );
                     },

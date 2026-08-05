@@ -1,6 +1,9 @@
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:pdf/pdf.dart';
+import 'package:pdf/widgets.dart' as pw;
+import 'package:printing/printing.dart';
 
 void main() {
   runApp(const EkodavSafetyApp());
@@ -28,6 +31,9 @@ class EkodavSafetyApp extends StatelessWidget {
   }
 }
 
+// -----------------------------------------------------------------------------
+// POMOCNÁ FUNKCE PRO AUTOMATICKÉ URČENÍ LEGISLATIVY
+// -----------------------------------------------------------------------------
 String getDefaultLegislation(String category) {
   switch (category) {
     case 'BOZP':
@@ -49,6 +55,9 @@ String getDefaultLegislation(String category) {
   }
 }
 
+// -----------------------------------------------------------------------------
+// DATOVÉ MODELY (NÁLEZ A REPORT)
+// -----------------------------------------------------------------------------
 class Finding {
   final String id;
   int orderNumber;
@@ -92,6 +101,9 @@ class InspectionReport {
 List<Finding> globalFindings = [];
 List<InspectionReport> savedReports = [];
 
+// -----------------------------------------------------------------------------
+// 1. DOMOVSKÁ OBRAZOVKA
+// -----------------------------------------------------------------------------
 class HomeScreen extends StatefulWidget {
   const HomeScreen({Key? key}) : super(key: key);
 
@@ -184,6 +196,9 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 }
 
+// -----------------------------------------------------------------------------
+// 2. ZADÁNÍ LOKACE
+// -----------------------------------------------------------------------------
 class NewReportScreen extends StatefulWidget {
   const NewReportScreen({Key? key}) : super(key: key);
 
@@ -255,6 +270,9 @@ class _NewReportScreenState extends State<NewReportScreen> {
   }
 }
 
+// -----------------------------------------------------------------------------
+// 3. INSPEKČNÍ REŽIM
+// -----------------------------------------------------------------------------
 class InspectionModeScreen extends StatefulWidget {
   final String locationName;
   const InspectionModeScreen({Key? key, required this.locationName}) : super(key: key);
@@ -297,7 +315,6 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
         });
       }
     } catch (e) {
-      // Pokud fotoaparát přímo selže (např. v emulátoru nebo zablokovaný browser), umožníme výběr souboru
       try {
         final XFile? galleryFile = await _picker.pickImage(source: ImageSource.gallery);
         if (galleryFile != null) {
@@ -736,6 +753,9 @@ class ReportsHistoryScreen extends StatelessWidget {
   }
 }
 
+// -----------------------------------------------------------------------------
+// 5. REVIZE U STOLU + REÁLNÝ GENERÁTOR A KE STAŽENÍ PDF PROTOKOLU
+// -----------------------------------------------------------------------------
 class RevisionTableScreen extends StatefulWidget {
   const RevisionTableScreen({Key? key}) : super(key: key);
 
@@ -783,6 +803,85 @@ class _RevisionTableScreenState extends State<RevisionTableScreen> {
           )
         ],
       ),
+    );
+  }
+
+  // REÁLNÉ VYGENEROVÁNÍ A KONTROLA PDF PROTOKOLU
+  Future<void> _generateAndDownloadPdf() async {
+    final pdf = pw.Document();
+
+    // Načtení české diakritiky z Google Fonts
+    final fontRegular = await PdfGoogleFonts.robotoRegular();
+    final fontBold = await PdfGoogleFonts.robotoBold();
+
+    pdf.addPage(
+      pw.MultiPage(
+        pageFormat: PdfPageFormat.a4,
+        theme: pw.ThemeData.withFont(
+          base: fontRegular,
+          bold: fontBold,
+        ),
+        build: (pw.Context context) {
+          return [
+            pw.Header(
+              level: 0,
+              child: pw.Row(
+                mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                children: [
+                  pw.Text(
+                    'EKODAV SAFETY - PROTOKOL BOZP A PO',
+                    style: pw.TextStyle(fontSize: 16, fontWeight: pw.FontWeight.bold, color: PdfColors.blue800),
+                  ),
+                  pw.Text('${DateTime.now().day}.${DateTime.now().month}.${DateTime.now().year}'),
+                ],
+              ),
+            ),
+            pw.SizedBox(height: 10),
+            pw.Text('Celkový počet nálezů: ${globalFindings.length}', style: const pw.TextStyle(fontSize: 12)),
+            pw.Divider(),
+            pw.SizedBox(height: 10),
+            ...globalFindings.map((f) {
+              final leg = f.legislation.isEmpty ? getDefaultLegislation(f.category) : f.legislation;
+              return pw.Container(
+                margin: const pw.EdgeInsets.only(bottom: 12),
+                padding: const pw.EdgeInsets.all(10),
+                decoration: pw.BoxDecoration(
+                  border: pw.Border.all(color: PdfColors.grey400),
+                  borderRadius: const pw.BorderRadius.all(pw.Radius.circular(6)),
+                ),
+                child: pw.Column(
+                  crossAxisAlignment: pw.CrossAxisAlignment.start,
+                  children: [
+                    pw.Row(
+                      mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                      children: [
+                        pw.Text('Nález #${f.orderNumber} • ${f.category}', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 13)),
+                        pw.Text('Závažnost: ${f.severity}', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, color: f.severity == 'Vysoká' ? PdfColors.red : PdfColors.orange800)),
+                      ],
+                    ),
+                    pw.SizedBox(height: 4),
+                    pw.Text('Popis: ${f.description}'),
+                    pw.SizedBox(height: 4),
+                    pw.Text('Zákon / Norma: $leg', style: pw.TextStyle(color: PdfColors.blue900, fontWeight: pw.FontWeight.bold)),
+                    if (f.photoBytes != null) ...[
+                      pw.SizedBox(height: 8),
+                      pw.Container(
+                        height: 120,
+                        child: pw.Image(pw.MemoryImage(f.photoBytes!), fit: pw.BoxFit.contain),
+                      ),
+                    ],
+                  ],
+                ),
+              );
+            }).toList(),
+          ];
+        },
+      ),
+    );
+
+    await Printing.layoutPdf(
+      onLayout: (PdfPageFormat format) async => pdf.save(),
+      name: 'Protokol_BOZP_${DateTime.now().day}_${DateTime.now().month}_${DateTime.now().year}.pdf',
     );
   }
 
@@ -866,19 +965,7 @@ class _RevisionTableScreenState extends State<RevisionTableScreen> {
             ),
             onPressed: () {
               Navigator.pop(context);
-              showDialog(
-                context: context,
-                builder: (context) => AlertDialog(
-                  title: const Text('✅ Report Vygenerován!'),
-                  content: const Text('Inspekční protokol BOZP byl úspěšně připraven ke stažení nebo tisk do PDF.'),
-                  actions: [
-                    ElevatedButton(
-                      onPressed: () => Navigator.pop(context),
-                      child: const Text('OK'),
-                    )
-                  ],
-                ),
-              );
+              _generateAndDownloadPdf();
             },
           )
         ],

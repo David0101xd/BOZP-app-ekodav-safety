@@ -40,7 +40,6 @@ Future<void> openEkodavWeb() async {
 }
 
 Future<void> openGoogleMaps(String gpsCoords) async {
-  final cleanCoords = gpsCoords.replaceAll('GPS:', '').trim();
   final Uri url = Uri.parse('https://www.google.com/maps/search/?api=1&query=$cleanCoords');
   if (!await launchUrl(url, mode: LaunchMode.externalApplication)) {
     debugPrint('Could not launch $url');
@@ -49,9 +48,6 @@ Future<void> openGoogleMaps(String gpsCoords) async {
 
 Set<String> subLocationHistory = {'Sklad', 'Parkoviště', 'Rampa', 'Dílna', 'Kanceláře', 'Výrobní hala'};
 
-// -----------------------------------------------------------------------------
-// DATOVÝ MODEL PRO LEGISLATIVNÍ PRAVIDLA
-// -----------------------------------------------------------------------------
 class LegislationRule {
   final String id;
   String category;
@@ -296,9 +292,6 @@ List<InspectionReport> savedReports = [
   ),
 ];
 
-// -----------------------------------------------------------------------------
-// 1. DOMOVSKÁ OBRAZOVKA
-// -----------------------------------------------------------------------------
 class HomeScreen extends StatefulWidget {
   const HomeScreen({Key? key}) : super(key: key);
 
@@ -439,9 +432,6 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 }
 
-// -----------------------------------------------------------------------------
-// SPRÁVA LEGISLATIVY
-// -----------------------------------------------------------------------------
 class LegislationManagerScreen extends StatefulWidget {
   const LegislationManagerScreen({Key? key}) : super(key: key);
 
@@ -700,9 +690,6 @@ class _LegislationManagerScreenState extends State<LegislationManagerScreen> {
   }
 }
 
-// -----------------------------------------------------------------------------
-// 2. ZADÁNÍ LOKACE, FIRMY & HISTORIE
-// -----------------------------------------------------------------------------
 class NewReportScreen extends StatefulWidget {
   const NewReportScreen({Key? key}) : super(key: key);
 
@@ -925,10 +912,7 @@ class _NewReportScreenState extends State<NewReportScreen> {
                           if (report.locationName.contains('GPS:'))
                             GestureDetector(
                               onTap: () {
-                                final parts = report.locationName.split('GPS:');
-                                if (parts.length > 1) {
-                                  openGoogleMaps(parts[1]);
-                                }
+                                openGoogleMaps(report.locationName);
                               },
                               child: const Padding(
                                 padding: EdgeInsets.only(top: 4.0),
@@ -970,9 +954,6 @@ class _NewReportScreenState extends State<NewReportScreen> {
   }
 }
 
-// -----------------------------------------------------------------------------
-// 3. INSPEKČNÍ REŽIM SE ZADÁVÁNÍM MÍSTA
-// -----------------------------------------------------------------------------
 class InspectionModeScreen extends StatefulWidget {
   final String locationName;
   final String companyName;
@@ -1120,7 +1101,7 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
           orderNumber: globalFindings.length + 1,
           category: _selectedCategory,
           severity: _selectedSeverity,
-          description: _noteController.text.isEmpty ? 'Nález bez poznámky' : _noteController.text;
+          description: _noteController.text.isEmpty ? 'Nález bez poznámky' : _noteController.text,
           locationDetail: placeText,
           legislation: matchedLegislation,
           photoBytes: _currentPhotoBytes,
@@ -1501,10 +1482,7 @@ class ReportsHistoryScreen extends StatelessWidget {
                         if (report.locationName.contains('GPS:'))
                           GestureDetector(
                             onTap: () {
-                              final parts = report.locationName.split('GPS:');
-                              if (parts.length > 1) {
-                                openGoogleMaps(parts[1]);
-                              }
+                              openGoogleMaps(report.locationName);
                             },
                             child: const Padding(
                               padding: EdgeInsets.only(top: 4.0),
@@ -1604,7 +1582,7 @@ class _RevisionTableScreenState extends State<RevisionTableScreen> {
                 children: [
                   pw.Text(
                     'EKODAV SAFETY - PROTOKOL BOZP A PO',
-                    style: pw.TextStyle(fontSize: 16, fontWeight: pw.FontWeight.bold, color: PdfColors.blue),
+                    style: pw.TextStyle(fontSize: 16, fontWeight: pw.FontWeight.bold, color: const PdfColor.fromInt(0xFF0284C7)),
                   ),
                   pw.Text('${DateTime.now().day}.${DateTime.now().month}.${DateTime.now().year}'),
                 ],
@@ -1619,7 +1597,7 @@ class _RevisionTableScreenState extends State<RevisionTableScreen> {
                 margin: const pw.EdgeInsets.only(bottom: 12),
                 padding: const pw.EdgeInsets.all(10),
                 decoration: pw.BoxDecoration(
-                  border: pw.Border.all(color: PdfColors.grey400),
+                  border: pw.Border.all(color: const PdfColor.fromInt(0xFFBDBDBD)),
                   borderRadius: const pw.BorderRadius.all(pw.Radius.circular(6)),
                 ),
                 child: pw.Column(
@@ -1629,17 +1607,17 @@ class _RevisionTableScreenState extends State<RevisionTableScreen> {
                       mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
                       children: [
                         pw.Text('Nalez #${f.orderNumber} - ${f.category}', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 13)),
-                        pw.Text('Zavaznost: ${f.severity}', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, color: f.severity == 'Vysoká' || f.severity == 'Vysoka' ? PdfColors.red : PdfColors.orange)),
+                        pw.Text('Zavaznost: ${f.severity}', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, color: f.severity == 'Vysoká' || f.severity == 'Vysoka' ? const PdfColor.fromInt(0xFFD32F2F) : const PdfColor.fromInt(0xFFF57C00))),
                       ],
                     ),
                     pw.SizedBox(height: 4),
                     if (f.locationDetail.isNotEmpty) ...[
-                      pw.Text('Misto nalezu: ${f.locationDetail}', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, color: PdfColors.grey800)),
+                      pw.Text('Misto nalezu: ${f.locationDetail}', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, color: const PdfColor.fromInt(0xFF424242))),
                       pw.SizedBox(height: 2),
                     ],
                     pw.Text('Popis: ${f.description}'),
                     pw.SizedBox(height: 4),
-                    pw.Text('Zakon / Norma: ${f.legislation}', style: pw.TextStyle(color: PdfColors.blue, fontWeight: pw.FontWeight.bold)),
+                    pw.Text('Zakon / Norma: ${f.legislation}', style: pw.TextStyle(color: const PdfColor.fromInt(0xFF0284C7), fontWeight: pw.FontWeight.bold)),
                     if (f.photoBytes != null) ...[
                       pw.SizedBox(height: 8),
                       pw.Container(

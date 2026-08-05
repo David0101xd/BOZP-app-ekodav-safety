@@ -336,7 +336,6 @@ class _HomeScreenState extends State<HomeScreen> {
                       ),
                       const SizedBox(height: 25),
 
-                      // TLAČÍTKO 1
                       ElevatedButton.icon(
                         icon: const Icon(Icons.add_a_photo, size: 24),
                         label: const Text('NOVÝ REPORT (V TERÉNU)', style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
@@ -356,7 +355,6 @@ class _HomeScreenState extends State<HomeScreen> {
                       ),
                       const SizedBox(height: 10),
 
-                      // TLAČÍTKO 2
                       OutlinedButton.icon(
                         icon: const Icon(Icons.table_chart, size: 24),
                         label: Text('REVIZE REPORTU (U STOLU) (${globalFindings.length})', style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
@@ -376,7 +374,6 @@ class _HomeScreenState extends State<HomeScreen> {
                       ),
                       const SizedBox(height: 10),
 
-                      // TLAČÍTKO 3
                       OutlinedButton.icon(
                         icon: const Icon(Icons.folder_open, size: 24),
                         label: Text('HISTORIE REPORTŮ (${savedReports.length})', style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
@@ -398,7 +395,6 @@ class _HomeScreenState extends State<HomeScreen> {
                       const Divider(thickness: 1.5),
                       const SizedBox(height: 10),
 
-                      // TLAČÍTKO 4 (SPRÁVA LEGISLATIVY DOLE)
                       ElevatedButton.icon(
                         icon: const Icon(Icons.gavel, size: 22),
                         label: Text('SPRÁVA LEGISLATIVY (${globalLegislationDatabase.length})', style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
@@ -734,9 +730,8 @@ class _NewReportScreenState extends State<NewReportScreen> {
   }
 
   void _getGpsLocation() {
-    // Simulace zjištění GPS pozice
     setState(() {
-      _gpsCoords = '50.0755, 14.4378'; // Praha / Výchozí souradnice
+      _gpsCoords = '50.0755, 14.4378';
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('📍 GPS pozice byla úspěšně načtena!'), backgroundColor: Colors.green),
       );
@@ -771,7 +766,6 @@ class _NewReportScreenState extends State<NewReportScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // SEKCIE KONTROLOVANÝ SUBJEKT
             const Text('KONTROLOVANÝ SUBJEKT (FIRMA):', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Color(0xFF0284C7))),
             const SizedBox(height: 8),
 
@@ -817,7 +811,6 @@ class _NewReportScreenState extends State<NewReportScreen> {
             ),
             const SizedBox(height: 18),
 
-            // NÁZEV PROVOZOVNY S TLAČÍTKEM PRO GPS
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
@@ -927,6 +920,7 @@ class _NewReportScreenState extends State<NewReportScreen> {
                       subtitle: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
+                          if (report.companyIco.isNotEmpty) Text('IČO: ${report.companyIco} • Sídlo: ${report.companyAddress}'),
                           Text('Počet nálezů: ${report.findings.length} • ${report.date.day}.${report.date.month}.${report.date.year}'),
                           if (report.locationName.contains('GPS:'))
                             GestureDetector(
@@ -1610,7 +1604,7 @@ class _RevisionTableScreenState extends State<RevisionTableScreen> {
                 children: [
                   pw.Text(
                     'EKODAV SAFETY - PROTOKOL BOZP A PO',
-                    style: pw.TextStyle(fontSize: 16, fontWeight: pw.FontWeight.bold, color: PdfColors.blue800),
+                    style: pw.TextStyle(fontSize: 16, fontWeight: pw.FontWeight.bold, color: PdfColors.blue),
                   ),
                   pw.Text('${DateTime.now().day}.${DateTime.now().month}.${DateTime.now().year}'),
                 ],
@@ -1635,7 +1629,7 @@ class _RevisionTableScreenState extends State<RevisionTableScreen> {
                       mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
                       children: [
                         pw.Text('Nalez #${f.orderNumber} - ${f.category}', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 13)),
-                        pw.Text('Zavaznost: ${f.severity}', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, color: f.severity == 'Vysoká' || f.severity == 'Vysoka' ? PdfColors.red : PdfColors.orange800)),
+                        pw.Text('Zavaznost: ${f.severity}', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, color: f.severity == 'Vysoká' || f.severity == 'Vysoka' ? PdfColors.red : PdfColors.orange)),
                       ],
                     ),
                     pw.SizedBox(height: 4),
@@ -1645,7 +1639,7 @@ class _RevisionTableScreenState extends State<RevisionTableScreen> {
                     ],
                     pw.Text('Popis: ${f.description}'),
                     pw.SizedBox(height: 4),
-                    pw.Text('Zakon / Norma: ${f.legislation}', style: pw.TextStyle(color: PdfColors.blue900, fontWeight: pw.FontWeight.bold)),
+                    pw.Text('Zakon / Norma: ${f.legislation}', style: pw.TextStyle(color: PdfColors.blue, fontWeight: pw.FontWeight.bold)),
                     if (f.photoBytes != null) ...[
                       pw.SizedBox(height: 8),
                       pw.Container(

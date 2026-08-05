@@ -40,7 +40,6 @@ Future<void> openEkodavWeb() async {
 }
 
 Future<void> openGoogleMaps(String gpsCoords) async {
-  final cleanCoords = gpsCoords.replaceAll('GPS:', '').trim();
   final Uri url = Uri.parse('https://www.google.com/maps/search/?api=1&query=$cleanCoords');
   if (!await launchUrl(url, mode: LaunchMode.externalApplication)) {
     debugPrint('Could not launch $url');
@@ -701,7 +700,7 @@ class _LegislationManagerScreenState extends State<LegislationManagerScreen> {
 }
 
 // -----------------------------------------------------------------------------
-// 2. ZADÁNÍ LOKACE, FIRMY (3 POLÍČKA) + GPS & HISTORIE
+// 2. ZADÁNÍ LOKACE, FIRMY & HISTORIE
 // -----------------------------------------------------------------------------
 class NewReportScreen extends StatefulWidget {
   const NewReportScreen({Key? key}) : super(key: key);
@@ -766,7 +765,6 @@ class _NewReportScreenState extends State<NewReportScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // 3 SAMOSTATNÁ POLÍČKA PRO KONTROLOVANÝ SUBJEKT
             const Text('KONTROLOVANÝ SUBJEKT (FIRMA):', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Color(0xFF0284C7))),
             const SizedBox(height: 8),
 
@@ -812,7 +810,6 @@ class _NewReportScreenState extends State<NewReportScreen> {
             ),
             const SizedBox(height: 18),
 
-            // NÁZEV PROVOZOVNY S TLAČÍTKEM ZÍSKAT GPS
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
@@ -1600,7 +1597,7 @@ class _RevisionTableScreenState extends State<RevisionTableScreen> {
                 children: [
                   pw.Text(
                     'EKODAV SAFETY - PROTOKOL BOZP A PO',
-                    style: pw.TextStyle(fontSize: 16, fontWeight: pw.FontWeight.bold, color: PdfColors.blue800),
+                    style: pw.TextStyle(fontSize: 16, fontWeight: pw.FontWeight.bold, color: PdfColors.blue),
                   ),
                   pw.Text('${DateTime.now().day}.${DateTime.now().month}.${DateTime.now().year}'),
                 ],
@@ -1625,7 +1622,7 @@ class _RevisionTableScreenState extends State<RevisionTableScreen> {
                       mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
                       children: [
                         pw.Text('Nalez #${f.orderNumber} - ${f.category}', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 13)),
-                        pw.Text('Zavaznost: ${f.severity}', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, color: f.severity == 'Vysoká' || f.severity == 'Vysoka' ? PdfColors.red : PdfColors.orange800)),
+                        pw.Text('Zavaznost: ${f.severity}', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, color: f.severity == 'Vysoká' || f.severity == 'Vysoka' ? PdfColors.red : PdfColors.orange)),
                       ],
                     ),
                     pw.SizedBox(height: 4),
@@ -1635,7 +1632,7 @@ class _RevisionTableScreenState extends State<RevisionTableScreen> {
                     ],
                     pw.Text('Popis: ${f.description}'),
                     pw.SizedBox(height: 4),
-                    pw.Text('Zakon / Norma: ${f.legislation}', style: pw.TextStyle(color: PdfColors.blue800, fontWeight: pw.FontWeight.bold)),
+                    pw.Text('Zakon / Norma: ${f.legislation}', style: pw.TextStyle(color: PdfColors.blue, fontWeight: pw.FontWeight.bold)),
                     if (f.photoBytes != null) ...[
                       pw.SizedBox(height: 8),
                       pw.Container(

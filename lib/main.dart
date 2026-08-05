@@ -1,3 +1,4 @@
+import 'dart:html' as html;
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
@@ -29,6 +30,11 @@ class EkodavSafetyApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
     );
   }
+}
+
+// Funkce pro otevření webu www.ekodav.cz po kliknutí na logo
+void openEkodavWeb() {
+  html.window.open('https://www.ekodav.cz', '_blank');
 }
 
 // -----------------------------------------------------------------------------
@@ -102,7 +108,7 @@ List<Finding> globalFindings = [];
 List<InspectionReport> savedReports = [];
 
 // -----------------------------------------------------------------------------
-// 1. DOMOVSKÁ OBRAZOVKA
+// 1. DOMOVSKÁ OBRAZOVKA (S KLIKACÍM LOGEM V HLAVIČCE)
 // -----------------------------------------------------------------------------
 class HomeScreen extends StatefulWidget {
   const HomeScreen({Key? key}) : super(key: key);
@@ -116,9 +122,31 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('EKODAV SAFETY', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
         backgroundColor: Theme.of(context).colorScheme.primary,
         centerTitle: true,
+        title: GestureDetector(
+          onTap: openEkodavWeb,
+          child: MouseRegion(
+            cursor: SystemMouseCursors.click,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Image.network(
+                  'logo.png',
+                  height: 34,
+                  errorBuilder: (context, error, stackTrace) {
+                    return const Icon(Icons.eco, color: Colors.greenAccent, size: 28);
+                  },
+                ),
+                const SizedBox(width: 10),
+                const Text(
+                  'EKODAV SAFETY',
+                  style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 18),
+                ),
+              ],
+            ),
+          ),
+        ),
       ),
       body: Padding(
         padding: const EdgeInsets.all(20.0),
@@ -126,7 +154,10 @@ class _HomeScreenState extends State<HomeScreen> {
           mainAxisAlignment: MainAxisAlignment.center,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            const Icon(Icons.shield_outlined, size: 80, color: Color(0xFF0284C7)),
+            GestureDetector(
+              onTap: openEkodavWeb,
+              child: const Icon(Icons.shield_outlined, size: 80, color: Color(0xFF0284C7)),
+            ),
             const SizedBox(height: 10),
             const Text(
               'Inspekce BOZP a PO v terenu',
@@ -806,7 +837,6 @@ class _RevisionTableScreenState extends State<RevisionTableScreen> {
     );
   }
 
-  // 100% BEZPEČNÉ VYGENEROVÁNÍ A ULOŽENÍ / STAŽENÍ PDF PROTOKOLU
   Future<void> _generateAndDownloadPdf() async {
     final pdf = pw.Document();
 
@@ -871,7 +901,6 @@ class _RevisionTableScreenState extends State<RevisionTableScreen> {
       ),
     );
 
-    // Přímé stažení souboru / nabídka sdílení
     final pdfBytes = await pdf.save();
     await Printing.sharePdf(
       bytes: pdfBytes,

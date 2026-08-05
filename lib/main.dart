@@ -33,24 +33,18 @@ class EkodavSafetyApp extends StatelessWidget {
   }
 }
 
-// Odkaz na www.ekodav.cz
 void openEkodavWeb() {
   html.window.open('https://www.ekodav.cz', '_blank');
 }
 
-// Otevření GPS souřadnic v Google Maps
 void openGoogleMaps(String gpsCoords) {
   final cleanCoords = gpsCoords.replaceAll('GPS: ', '').trim();
   final url = 'https://www.google.com/maps/search/?api=1&query=$cleanCoords';
   html.window.open(url, '_blank');
 }
 
-// Globalni prediktivní historie zadaných míst v rámci nálezů
 Set<String> subLocationHistory = {'Sklad', 'Parkoviště', 'Rampa', 'Dílna', 'Kanceláře', 'Výrobní hala'};
 
-// -----------------------------------------------------------------------------
-// KLIKACÍ LOGO EKODAV
-// -----------------------------------------------------------------------------
 Widget buildEkodavLogoHeader() {
   return GestureDetector(
     onTap: openEkodavWeb,
@@ -99,9 +93,6 @@ Widget buildEkodavLogoHeader() {
   );
 }
 
-// -----------------------------------------------------------------------------
-// LEGISLATIVA PŘEDVYPLNĚNÁ PODLE KATEGORIE
-// -----------------------------------------------------------------------------
 String getDefaultLegislation(String category) {
   switch (category) {
     case 'BOZP':
@@ -123,9 +114,6 @@ String getDefaultLegislation(String category) {
   }
 }
 
-// -----------------------------------------------------------------------------
-// DATOVÉ MODELY
-// -----------------------------------------------------------------------------
 class Finding {
   final String id;
   int orderNumber;
@@ -133,7 +121,7 @@ class Finding {
   String severity;
   String description;
   String legislation;
-  String locationDetail; // Ukládá přesné místo (Sklad, Parkoviště...)
+  String locationDetail;
   bool isPhotoTaken;
   Uint8List? photoBytes;
   DateTime timestamp;
@@ -190,9 +178,6 @@ List<InspectionReport> savedReports = [
   ),
 ];
 
-// -----------------------------------------------------------------------------
-// 1. DOMOVSKÁ OBRAZOVKA
-// -----------------------------------------------------------------------------
 class HomeScreen extends StatefulWidget {
   const HomeScreen({Key? key}) : super(key: key);
 
@@ -288,9 +273,6 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 }
 
-// -----------------------------------------------------------------------------
-// 2. ZADÁNÍ LOKACE A HISTORIE
-// -----------------------------------------------------------------------------
 class NewReportScreen extends StatefulWidget {
   const NewReportScreen({Key? key}) : super(key: key);
 
@@ -332,6 +314,17 @@ class _NewReportScreenState extends State<NewReportScreen> {
         _isGettingGps = false;
       });
     }
+  }
+
+  void _startInspection() {
+    String loc = _locationController.text.trim();
+    if (loc.isEmpty) {
+      loc = 'Inspekce BOZP (${DateTime.now().day}.${DateTime.now().month}.${DateTime.now().year})';
+    }
+    Navigator.pushReplacement(
+      context,
+      MaterialPageRoute(builder: (context) => InspectionModeScreen(locationName: loc)),
+    );
   }
 
   @override
@@ -377,13 +370,7 @@ class _NewReportScreenState extends State<NewReportScreen> {
                 padding: const EdgeInsets.symmetric(vertical: 16),
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
               ),
-              onPressed: () {
-                if (_locationController.text.trim().isEmpty) return;
-                Navigator.pushReplacement(
-                  context,
-                  MaterialPageRoute(builder: (context) => InspectionModeScreen(locationName: _locationController.text)),
-                );
-              },
+              onPressed: _startInspection,
             ),
 
             const SizedBox(height: 24),
@@ -472,9 +459,6 @@ class _NewReportScreenState extends State<NewReportScreen> {
   }
 }
 
-// -----------------------------------------------------------------------------
-// 3. INSPEKČNÍ REŽIM SE ZADÁVÁNÍM MÍSTA
-// -----------------------------------------------------------------------------
 class InspectionModeScreen extends StatefulWidget {
   final String locationName;
   const InspectionModeScreen({Key? key, required this.locationName}) : super(key: key);
@@ -586,7 +570,6 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
       final autoLegislation = getDefaultLegislation(_selectedCategory);
       final placeText = _placeController.text.trim();
 
-      // Uložení místa do historie pro předikci
       if (placeText.isNotEmpty) {
         subLocationHistory.add(placeText);
       }
@@ -730,7 +713,6 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
                 ),
               ),
 
-            // 1. OBRÁZEK / VYFOCENÍ
             GestureDetector(
               onTap: _showImageSourceDialog,
               child: Container(
@@ -778,7 +760,6 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
             ),
             const SizedBox(height: 14),
 
-            // NOVÉ: MÍSTO NÁLEZU S PREDIKTIVNÍ HISTORIÍ
             const Text('Misto / Upresneni lokace nalezu:', style: TextStyle(fontWeight: FontWeight.bold)),
             const SizedBox(height: 4),
             TextField(
@@ -791,7 +772,6 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
               ),
             ),
             const SizedBox(height: 6),
-            // Prediktivní chipy z historie
             Wrap(
               spacing: 6,
               runSpacing: 4,
@@ -810,7 +790,6 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
             ),
             const SizedBox(height: 14),
 
-            // 2. KATEGORIE
             const Text('2. Kategorie:', style: TextStyle(fontWeight: FontWeight.bold)),
             const SizedBox(height: 4),
             Wrap(
@@ -829,7 +808,6 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
             ),
             const SizedBox(height: 12),
 
-            // 3. ZÁVAŽNOST
             const Text('3. Zavaznost:', style: TextStyle(fontWeight: FontWeight.bold)),
             const SizedBox(height: 4),
             Row(
@@ -859,7 +837,6 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
             ),
             const SizedBox(height: 12),
 
-            // 4. POPIS
             TextField(
               controller: _noteController,
               decoration: const InputDecoration(
@@ -1026,9 +1003,6 @@ class ReportsHistoryScreen extends StatelessWidget {
   }
 }
 
-// -----------------------------------------------------------------------------
-// 5. REVIZE U STOLU A GENEROWÁNÍ PDF PROTOKOLU
-// -----------------------------------------------------------------------------
 class RevisionTableScreen extends StatefulWidget {
   const RevisionTableScreen({Key? key}) : super(key: key);
 

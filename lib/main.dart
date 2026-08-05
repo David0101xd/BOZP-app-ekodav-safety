@@ -46,7 +46,7 @@ void openGoogleMaps(String gpsCoords) {
 Set<String> subLocationHistory = {'Sklad', 'Parkoviště', 'Rampa', 'Dílna', 'Kanceláře', 'Výrobní hala'};
 
 // -----------------------------------------------------------------------------
-// DATOVÝ MODEL PRO LEGISLATIVNÍ PRAVIDLA A DATABÁZI
+// DATOVÝ MODEL PRO LEGISLATIVNÍ PRAVIDLA
 // -----------------------------------------------------------------------------
 class LegislationRule {
   final String id;
@@ -54,7 +54,7 @@ class LegislationRule {
   String lawNumber; // Číslo legislativy (nepovinné)
   String paragraph; // Paragraf (povinné)
   String citation; // Citace (nepovinné)
-  String subjectDescription; // Čeho se týká (jednoduchý popis)
+  String subjectDescription; // Čeho se týká (popis pro vyhodnocování)
 
   LegislationRule({
     required this.id,
@@ -73,7 +73,7 @@ class LegislationRule {
   }
 }
 
-// Výchozí znalostní báze legislativy
+// Znalostní báze čerpané legislativy a norem
 List<LegislationRule> globalLegislationDatabase = [
   LegislationRule(
     id: '1',
@@ -81,7 +81,7 @@ List<LegislationRule> globalLegislationDatabase = [
     lawNumber: '262/2006 Sb.',
     paragraph: '§ 102 odst. 1',
     citation: 'Zaměstnavatel je povinen vytvářet bezpečné a zdraví neohrožující pracovní prostředí.',
-    subjectDescription: 'rozpadlé schody, prostředí pracoviště, komunikace',
+    subjectDescription: 'rozpadlé schody, prostředí pracoviště, nerovný povrch',
   ),
   LegislationRule(
     id: '2',
@@ -89,7 +89,7 @@ List<LegislationRule> globalLegislationDatabase = [
     lawNumber: '133/1985 Sb.',
     paragraph: '§ 5 odst. 1',
     citation: 'Právnické osoby jsou povinny obstarávat a udržovat v práceschopném stavu věcné prostředky požární ochrany.',
-    subjectDescription: 'zapadlý hasičák, přístup k hasicím přístrojům, zahrazený hydrant',
+    subjectDescription: 'zapadlý hasičák, chybějící revize PHP, zahrazený hydrant',
   ),
   LegislationRule(
     id: '3',
@@ -97,11 +97,11 @@ List<LegislationRule> globalLegislationDatabase = [
     lawNumber: '101/2005 Sb.',
     paragraph: 'Příloha č. 3',
     citation: 'Únikové cesty a východy musejí zůstat trvale volné.',
-    subjectDescription: 'blokovaný únikový východ, palety v cestě',
+    subjectDescription: 'blokovaný únikový východ, palety na chodbe',
   ),
 ];
 
-// Horní logo v liště
+// Horní malé logo v liště
 Widget buildEkodavLogoHeader() {
   return GestureDetector(
     onTap: openEkodavWeb,
@@ -287,7 +287,7 @@ List<InspectionReport> savedReports = [
 ];
 
 // -----------------------------------------------------------------------------
-// 1. DOMOVSKÁ OBRAZOVKA
+// 1. DOMOVSKÁ OBRAZOVKA (3 TLAČÍTKA + ČTVRTÉ VYHRAZENÉ PRO LEGISLATIVU)
 // -----------------------------------------------------------------------------
 class HomeScreen extends StatefulWidget {
   const HomeScreen({Key? key}) : super(key: key);
@@ -316,24 +316,24 @@ class _HomeScreenState extends State<HomeScreen> {
                     mainAxisAlignment: MainAxisAlignment.center,
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      const SizedBox(height: 20),
+                      const SizedBox(height: 15),
                       buildEkodavMainLogo(),
-                      const SizedBox(height: 16),
+                      const SizedBox(height: 12),
                       const Text(
                         'Inspekce BOZP a PO v terénu',
                         textAlign: TextAlign.center,
                         style: TextStyle(fontSize: 16, fontWeight: FontWeight.w500, color: Colors.grey),
                       ),
-                      const SizedBox(height: 35),
+                      const SizedBox(height: 25),
 
-                      // NOVÝ REPORT
+                      // TLAČÍTKO 1: NOVÝ REPORT (V TERÉNU)
                       ElevatedButton.icon(
                         icon: const Icon(Icons.add_a_photo, size: 24),
                         label: const Text('NOVÝ REPORT (V TERÉNU)', style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
                         style: ElevatedButton.styleFrom(
                           backgroundColor: const Color(0xFF0284C7),
                           foregroundColor: Colors.white,
-                          padding: const EdgeInsets.symmetric(vertical: 18),
+                          padding: const EdgeInsets.symmetric(vertical: 16),
                           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                         ),
                         onPressed: () async {
@@ -344,14 +344,14 @@ class _HomeScreenState extends State<HomeScreen> {
                           setState(() {});
                         },
                       ),
-                      const SizedBox(height: 12),
+                      const SizedBox(height: 10),
 
-                      // TLAČÍTKO PRO SPRÁVU A NAHRÁVÁNÍ LEGISLATIVY
+                      // TLAČÍTKO 2: REVIZE REPORTU (U STOLU)
                       OutlinedButton.icon(
-                        icon: const Icon(Icons.gavel, size: 24),
-                        label: Text('SPRÁVA & NAHRÁVÁNÍ LEGISLATIVY (${globalLegislationDatabase.length})', style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
+                        icon: const Icon(Icons.table_chart, size: 24),
+                        label: Text('REVIZE REPORTU (U STOLU) (${globalFindings.length})', style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
                         style: OutlinedButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(vertical: 16),
+                          padding: const EdgeInsets.symmetric(vertical: 15),
                           foregroundColor: const Color(0xFF0F172A),
                           side: const BorderSide(color: Color(0xFF0F172A), width: 2),
                           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
@@ -359,19 +359,19 @@ class _HomeScreenState extends State<HomeScreen> {
                         onPressed: () async {
                           await Navigator.push(
                             context,
-                            MaterialPageRoute(builder: (context) => const LegislationManagerScreen()),
+                            MaterialPageRoute(builder: (context) => const RevisionTableScreen()),
                           );
                           setState(() {});
                         },
                       ),
-                      const SizedBox(height: 12),
+                      const SizedBox(height: 10),
 
-                      // HISTORIE REPORTŮ
+                      // TLAČÍTKO 3: HISTORIE REPORTŮ
                       OutlinedButton.icon(
                         icon: const Icon(Icons.folder_open, size: 24),
                         label: Text('HISTORIE REPORTŮ (${savedReports.length})', style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
                         style: OutlinedButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(vertical: 16),
+                          padding: const EdgeInsets.symmetric(vertical: 15),
                           foregroundColor: Colors.grey[800],
                           side: BorderSide(color: Colors.grey[600]!, width: 1.5),
                           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
@@ -384,13 +384,36 @@ class _HomeScreenState extends State<HomeScreen> {
                           setState(() {});
                         },
                       ),
+                      const SizedBox(height: 20),
+                      const Divider(thickness: 1.5),
+                      const SizedBox(height: 10),
+
+                      // TLAČÍTKO 4: SPRÁVA LEGISLATIVY (POD PŮVODNÍMI TLAČÍTKY)
+                      ElevatedButton.icon(
+                        icon: const Icon(Icons.gavel, size: 22),
+                        label: Text('SPRÁVA LEGISLATIVY (${globalLegislationDatabase.length})', style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFF1E293B),
+                          foregroundColor: const Color(0xFF34D399),
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        ),
+                        onPressed: () async {
+                          await Navigator.push(
+                            context,
+                            MaterialPageRoute(builder: (context) => const LegislationManagerScreen()),
+                          );
+                          setState(() {});
+                        },
+                      ),
                     ],
                   ),
                 ),
               ),
 
+              const SizedBox(height: 10),
               Container(
-                padding: const EdgeInsets.all(12),
+                padding: const EdgeInsets.all(10),
                 decoration: BoxDecoration(
                   color: Colors.grey[100],
                   borderRadius: BorderRadius.circular(8),
@@ -411,7 +434,7 @@ class _HomeScreenState extends State<HomeScreen> {
 }
 
 // -----------------------------------------------------------------------------
-// OBSOULSLUŽNÁ OBRAZOVKA PRO NAHRÁVÁNÍ A ROZŠIŘOVÁNÍ LEGISLATIVY
+// SEZNAM A SPRÁVA ČERPANÉ LEGISLATIVY PRO VYHODNOCOVÁNÍ FOTEK
 // -----------------------------------------------------------------------------
 class LegislationManagerScreen extends StatefulWidget {
   const LegislationManagerScreen({Key? key}) : super(key: key);
@@ -442,7 +465,7 @@ class _LegislationManagerScreenState extends State<LegislationManagerScreen> {
           return AlertDialog(
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
             title: Text(
-              existingRule == null ? '➕ Přidat legislativní pravidlo' : '✏️ Upravit legislativní pravidlo',
+              existingRule == null ? '➕ Přidat normu / předpis' : '✏️ Upravit normu / předpis',
               style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
             ),
             content: SingleChildScrollView(
@@ -456,8 +479,7 @@ class _LegislationManagerScreenState extends State<LegislationManagerScreen> {
                       child: Text(errorMessage, style: const TextStyle(color: Colors.red, fontWeight: FontWeight.bold, fontSize: 12)),
                     ),
 
-                  // 1. OBLAST (POVINNÉ)
-                  const Text('1. Oblast (BOZP / PO...): *', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                  const Text('Oblast (BOZP / PO...): *', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
                   const SizedBox(height: 4),
                   DropdownButtonFormField<String>(
                     value: selectedCat,
@@ -472,20 +494,18 @@ class _LegislationManagerScreenState extends State<LegislationManagerScreen> {
                   ),
                   const SizedBox(height: 12),
 
-                  // 2. ČÍSLO LEGISLATIVY (NEPOVINNÉ)
-                  const Text('2. Číslo legislativy (nepovinné):', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                  const Text('Číslo legislativy / normy (nepovinné):', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
                   const SizedBox(height: 4),
                   TextField(
                     controller: lawController,
                     decoration: InputDecoration(
-                      hintText: 'např. 262/2006 Sb. nebo 133/1985 Sb.',
+                      hintText: 'např. 262/2006 Sb. nebo ČSN 73 0802',
                       border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
                     ),
                   ),
                   const SizedBox(height: 12),
 
-                  // 3. PARAGRAF (POVINNÉ)
-                  const Text('3. Paragraf / Ustanovení: *', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                  const Text('Paragraf / Ustanovení: *', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
                   const SizedBox(height: 4),
                   TextField(
                     controller: paraController,
@@ -496,8 +516,7 @@ class _LegislationManagerScreenState extends State<LegislationManagerScreen> {
                   ),
                   const SizedBox(height: 12),
 
-                  // 4. CITACE (NEPOVINNÉ)
-                  const Text('4. Přesná citace z předpisu (nepovinné):', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                  const Text('Přesná citace (nepovinné):', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
                   const SizedBox(height: 4),
                   TextField(
                     controller: citationController,
@@ -509,14 +528,13 @@ class _LegislationManagerScreenState extends State<LegislationManagerScreen> {
                   ),
                   const SizedBox(height: 12),
 
-                  // 5. ČEHO SE TÝKÁ / JEDNODUCHÝ POPIS
-                  const Text('5. Čeho se týká (popis / klíčová slova): *', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                  const Text('Čeho se týká (pro vyhodnocení fotek): *', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
                   const SizedBox(height: 4),
                   TextField(
                     controller: subjectController,
                     maxLines: 2,
                     decoration: InputDecoration(
-                      hintText: 'např. rozpadlé schody, zahrazený hydrant, chybějící zábradlí...',
+                      hintText: 'např. rozpadlé schody, zahrazený hydrant, chybějící kryt...',
                       border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
                     ),
                   ),
@@ -530,7 +548,7 @@ class _LegislationManagerScreenState extends State<LegislationManagerScreen> {
               ),
               ElevatedButton.icon(
                 icon: const Icon(Icons.save),
-                label: const Text('ULOŽIT PRAVIDLO'),
+                label: const Text('ULOŽIT NORMU'),
                 style: ElevatedButton.styleFrom(
                   backgroundColor: const Color(0xFF0284C7),
                   foregroundColor: Colors.white,
@@ -579,11 +597,11 @@ class _LegislationManagerScreenState extends State<LegislationManagerScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Základna legislativy a pravidel'),
+        title: const Text('Seznam čerpané legislativy & norem'),
       ),
       floatingActionButton: FloatingActionButton.extended(
         icon: const Icon(Icons.add),
-        label: const Text('PŘIDAT PRAVIDLO'),
+        label: const Text('PŘIDAT LEGISLATIVU / NORMU'),
         backgroundColor: const Color(0xFF0284C7),
         foregroundColor: Colors.white,
         onPressed: () => _showAddRuleDialog(),
@@ -606,7 +624,7 @@ class _LegislationManagerScreenState extends State<LegislationManagerScreen> {
                   SizedBox(width: 10),
                   Expanded(
                     child: Text(
-                      'Zde spravujete znění zákonů a vyhlášek. Zadaná pravidla pomáhají při automatickém vyhodnocování a generování nálezů.',
+                      'Tato databáze norem slouží jako podklad pro automatické vyhodnocování pořízených fotografií a vytváření inspekčních nálezů.',
                       style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500),
                     ),
                   ),
@@ -616,7 +634,7 @@ class _LegislationManagerScreenState extends State<LegislationManagerScreen> {
             const SizedBox(height: 16),
 
             Text(
-              'NAHRANÁ LEGISLATIVNÍ PRAVIDLA (${globalLegislationDatabase.length}):',
+              'SEZNAM ČERPANÉ LEGISLATIVY (${globalLegislationDatabase.length}):',
               style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Color(0xFF0F172A)),
             ),
             const SizedBox(height: 8),
@@ -641,7 +659,7 @@ class _LegislationManagerScreenState extends State<LegislationManagerScreen> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         const SizedBox(height: 4),
-                        Text('📌 Týká se: ${rule.subjectDescription}', style: const TextStyle(fontWeight: FontWeight.w600, color: Color(0xFF0284C7))),
+                        Text('🔎 Vyhodnocování fotek: ${rule.subjectDescription}', style: const TextStyle(fontWeight: FontWeight.w600, color: Color(0xFF0284C7))),
                         if (rule.citation.isNotEmpty) ...[
                           const SizedBox(height: 2),
                           Text('💬 "${rule.citation}"', style: const TextStyle(fontStyle: FontStyle.italic, fontSize: 11)),
@@ -982,7 +1000,6 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
         subLocationHistory.add(placeText);
       }
 
-      // Automatické vyhledání vhodné legislativy z naší databáze
       String matchedLegislation = '';
       final foundRule = globalLegislationDatabase.firstWhere(
         (r) => r.category == _selectedCategory,
@@ -1006,7 +1023,7 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
           orderNumber: globalFindings.length + 1,
           category: _selectedCategory,
           severity: _selectedSeverity,
-          description: _noteController.text.isEmpty ? 'Nález bez poznámky' : _noteController.text,
+          description: _noteController.text.isEmpty ? 'Nález bez poznámky' : _noteController.text;
           locationDetail: placeText,
           legislation: matchedLegislation,
           photoBytes: _currentPhotoBytes,
@@ -1412,6 +1429,276 @@ class ReportsHistoryScreen extends StatelessWidget {
                   ),
                 );
               },
+            ),
+    );
+  }
+}
+
+// -----------------------------------------------------------------------------
+// REVIZE REPORTU U STOLU
+// -----------------------------------------------------------------------------
+class RevisionTableScreen extends StatefulWidget {
+  const RevisionTableScreen({Key? key}) : super(key: key);
+
+  @override
+  State<RevisionTableScreen> createState() => _RevisionTableScreenState();
+}
+
+class _RevisionTableScreenState extends State<RevisionTableScreen> {
+  void _editLegislation(Finding finding) {
+    TextEditingController legController = TextEditingController(text: finding.legislation);
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Upravit legislativu (#${finding.orderNumber})'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Nález: ${finding.description}', style: const TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 12),
+            TextField(
+              controller: legController,
+              decoration: const InputDecoration(
+                labelText: 'Český zákon / norma',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Zrušit')),
+          ElevatedButton(
+            onPressed: () {
+              setState(() {
+                finding.legislation = legController.text;
+              });
+              Navigator.pop(context);
+            },
+            child: const Text('Uložit'),
+          )
+        ],
+      ),
+    );
+  }
+
+  Future<void> _generateAndDownloadPdf() async {
+    final pdf = pw.Document();
+
+    pdf.addPage(
+      pw.MultiPage(
+        pageFormat: PdfPageFormat.a4,
+        build: (pw.Context context) {
+          return [
+            pw.Header(
+              level: 0,
+              child: pw.Row(
+                mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                children: [
+                  pw.Text(
+                    'EKODAV SAFETY - PROTOKOL BOZP A PO',
+                    style: pw.TextStyle(fontSize: 16, fontWeight: pw.FontWeight.bold, color: PdfColors.blue800),
+                  ),
+                  pw.Text('${DateTime.now().day}.${DateTime.now().month}.${DateTime.now().year}'),
+                ],
+              ),
+            ),
+            pw.SizedBox(height: 10),
+            pw.Text('Celkovy pocet nalezu: ${globalFindings.length}', style: const pw.TextStyle(fontSize: 12)),
+            pw.Divider(),
+            pw.SizedBox(height: 10),
+            ...globalFindings.map((f) {
+              return pw.Container(
+                margin: const pw.EdgeInsets.only(bottom: 12),
+                padding: const pw.EdgeInsets.all(10),
+                decoration: pw.BoxDecoration(
+                  border: pw.Border.all(color: PdfColors.grey400),
+                  borderRadius: const pw.BorderRadius.all(pw.Radius.circular(6)),
+                ),
+                child: pw.Column(
+                  crossAxisAlignment: pw.CrossAxisAlignment.start,
+                  children: [
+                    pw.Row(
+                      mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                      children: [
+                        pw.Text('Nalez #${f.orderNumber} - ${f.category}', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 13)),
+                        pw.Text('Zavaznost: ${f.severity}', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, color: f.severity == 'Vysoká' || f.severity == 'Vysoka' ? PdfColors.red : PdfColors.orange800)),
+                      ],
+                    ),
+                    pw.SizedBox(height: 4),
+                    if (f.locationDetail.isNotEmpty) ...[
+                      pw.Text('Misto nalezu: ${f.locationDetail}', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, color: PdfColors.grey800)),
+                      pw.SizedBox(height: 2),
+                    ],
+                    pw.Text('Popis: ${f.description}'),
+                    pw.SizedBox(height: 4),
+                    pw.Text('Zakon / Norma: ${f.legislation}', style: pw.TextStyle(color: PdfColors.blue900, fontWeight: pw.FontWeight.bold)),
+                    if (f.photoBytes != null) ...[
+                      pw.SizedBox(height: 8),
+                      pw.Container(
+                        height: 120,
+                        child: pw.Image(pw.MemoryImage(f.photoBytes!), fit: pw.BoxFit.contain),
+                      ),
+                    ],
+                  ],
+                ),
+              );
+            }).toList(),
+          ];
+        },
+      ),
+    );
+
+    final pdfBytes = await pdf.save();
+    await Printing.sharePdf(
+      bytes: pdfBytes,
+      filename: 'Protokol_BOZP_${DateTime.now().day}_${DateTime.now().month}_${DateTime.now().year}.pdf',
+    );
+  }
+
+  void _generateReportPreview() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Row(
+          children: [
+            Icon(Icons.picture_as_pdf, color: Colors.red),
+            SizedBox(width: 8),
+            Text('GENERÁTOR REPORTU', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+          ],
+        ),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('PROTOKOL O INSPEKCI BOZP A PO', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF0284C7))),
+              const Divider(),
+              Text('Celkem nálezů: ${globalFindings.length}'),
+              Text('Datum vygenerování: ${DateTime.now().day}.${DateTime.now().month}.${DateTime.now().year}'),
+              const SizedBox(height: 12),
+              const Text('Obsah reportu ke stažení:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+              const SizedBox(height: 6),
+              Container(
+                height: 180,
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: Colors.grey[100],
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.grey[300]!),
+                ),
+                child: ListView.builder(
+                  shrinkWrap: true,
+                  itemCount: globalFindings.length,
+                  itemBuilder: (context, idx) {
+                    final f = globalFindings[idx];
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 4.0),
+                      child: Row(
+                        children: [
+                          if (f.photoBytes != null)
+                            Padding(
+                              padding: const EdgeInsets.only(right: 6.0),
+                              child: ClipRRect(
+                                borderRadius: BorderRadius.circular(4),
+                                child: Image.memory(f.photoBytes!, width: 30, height: 30, fit: BoxFit.cover),
+                              ),
+                            ),
+                          Expanded(
+                            child: Text(
+                              '• #${f.orderNumber} [${f.category}] ${f.locationDetail.isNotEmpty ? "(${f.locationDetail}) " : ""}${f.description}\n   Norma: ${f.legislation}',
+                              style: const TextStyle(fontSize: 11),
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Zavřít'),
+          ),
+          ElevatedButton.icon(
+            icon: const Icon(Icons.download),
+            label: const Text('STÁHNOUT REPORT (PDF)'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF0284C7),
+              foregroundColor: Colors.white,
+            ),
+            onPressed: () {
+              Navigator.pop(context);
+              _generateAndDownloadPdf();
+            },
+          )
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text('Revize reportu u stolu (${globalFindings.length} nálezů)')),
+      body: globalFindings.isEmpty
+          ? const Center(child: Text('Zatím nebyly zadané žádné nálezy.'))
+          : Column(
+              children: [
+                Expanded(
+                  child: ListView.builder(
+                    itemCount: globalFindings.length,
+                    itemBuilder: (context, index) {
+                      final finding = globalFindings[index];
+
+                      return Card(
+                        margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                        child: ListTile(
+                          leading: finding.photoBytes != null
+                              ? ClipRRect(
+                                  borderRadius: BorderRadius.circular(4),
+                                  child: Image.memory(finding.photoBytes!, width: 40, height: 40, fit: BoxFit.cover),
+                                )
+                              : CircleAvatar(
+                                  backgroundColor: finding.severity == 'Vysoká'
+                                      ? Colors.red
+                                      : finding.severity == 'Střední'
+                                          ? Colors.orange
+                                          : Colors.blue,
+                                  child: Text('#${finding.orderNumber}', style: const TextStyle(color: Colors.white)),
+                                ),
+                          title: Text('${finding.category} • ${finding.severity} závažnost', style: const TextStyle(fontWeight: FontWeight.bold)),
+                          subtitle: Text('${finding.locationDetail.isNotEmpty ? "📍 Místo: ${finding.locationDetail}\n" : ""}${finding.description}\n📜 Norma: ${finding.legislation}'),
+                          trailing: const Icon(Icons.edit, color: Color(0xFF0284C7)),
+                          isThreeLine: true,
+                          onTap: () => _editLegislation(finding),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: ElevatedButton.icon(
+                    icon: const Icon(Icons.print, size: 28),
+                    label: const Text('GENERATOVAT REPORT (PDF / EXPORT)', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.green[700],
+                      foregroundColor: Colors.white,
+                      minimumSize: const Size(double.infinity, 54),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    ),
+                    onPressed: _generateReportPreview,
+                  ),
+                ),
+              ],
             ),
     );
   }

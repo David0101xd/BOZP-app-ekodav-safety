@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:html' as html;
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
@@ -18,7 +19,7 @@ class EkodavSafetyApp extends StatelessWidget {
     return MaterialApp(
       title: 'EKODAV SAFETY',
       theme: ThemeData(
-        primaryColor: const Color(0xFF1E293B),
+        primaryColor: const Color(0xFF0F172A),
         colorScheme: ColorScheme.fromSeed(
           seedColor: const Color(0xFF0F172A),
           primary: const Color(0xFF0F172A),
@@ -32,13 +33,66 @@ class EkodavSafetyApp extends StatelessWidget {
   }
 }
 
-// Funkce pro otevření webu www.ekodav.cz po kliknutí na logo
+// Odkaz na www.ekodav.cz
 void openEkodavWeb() {
   html.window.open('https://www.ekodav.cz', '_blank');
 }
 
 // -----------------------------------------------------------------------------
-// POMOCNÁ FUNKCE PRO LEGISLATIVU
+// KLIKACÍ LOGO EKODAV (ZABUDOVANÉ PŘÍMO V KÓDU)
+// -----------------------------------------------------------------------------
+Widget buildEkodavLogoHeader() {
+  return GestureDetector(
+    onTap: openEkodavWeb,
+    child: MouseRegion(
+      cursor: SystemMouseCursors.click,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+        decoration: BoxDecoration(
+          color: Colors.white.withOpacity(0.1),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Zelený lístek EKODAV
+            Container(
+              padding: const EdgeInsets.all(4),
+              decoration: const BoxDecoration(
+                color: Color(0xFF10B981),
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(Icons.eco, color: Colors.white, size: 20),
+            ),
+            const SizedBox(width: 8),
+            // Text EKODAV
+            RichText(
+              text: const TextSpan(
+                children: [
+                  TextSpan(
+                    text: 'EKO',
+                    style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 18),
+                  ),
+                  TextSpan(
+                    text: 'DAV',
+                    style: TextStyle(color: Color(0xFF34D399), fontWeight: FontWeight.bold, fontSize: 18),
+                  ),
+                  TextSpan(
+                    text: ' SAFETY',
+                    style: TextStyle(color: Colors.grey, fontSize: 12, fontWeight: FontWeight.w300),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+}
+
+// -----------------------------------------------------------------------------
+// LEGISLATIVA PŘEDVYPLNĚNÁ PODLE KATEGORIE
 // -----------------------------------------------------------------------------
 String getDefaultLegislation(String category) {
   switch (category) {
@@ -108,7 +162,7 @@ List<Finding> globalFindings = [];
 List<InspectionReport> savedReports = [];
 
 // -----------------------------------------------------------------------------
-// 1. DOMOVSKÁ OBRAZOVKA (S KLIKACÍM LOGEM V HLAVIČCE)
+// 1. DOMOVSKÁ OBRAZOVKA
 // -----------------------------------------------------------------------------
 class HomeScreen extends StatefulWidget {
   const HomeScreen({Key? key}) : super(key: key);
@@ -124,29 +178,7 @@ class _HomeScreenState extends State<HomeScreen> {
       appBar: AppBar(
         backgroundColor: Theme.of(context).colorScheme.primary,
         centerTitle: true,
-        title: GestureDetector(
-          onTap: openEkodavWeb,
-          child: MouseRegion(
-            cursor: SystemMouseCursors.click,
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Image.network(
-                  'logo.png',
-                  height: 34,
-                  errorBuilder: (context, error, stackTrace) {
-                    return const Icon(Icons.eco, color: Colors.greenAccent, size: 28);
-                  },
-                ),
-                const SizedBox(width: 10),
-                const Text(
-                  'EKODAV SAFETY',
-                  style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 18),
-                ),
-              ],
-            ),
-          ),
-        ),
+        title: buildEkodavLogoHeader(),
       ),
       body: Padding(
         padding: const EdgeInsets.all(20.0),
@@ -785,7 +817,7 @@ class ReportsHistoryScreen extends StatelessWidget {
 }
 
 // -----------------------------------------------------------------------------
-// 5. REVIZE U STOLU A SPOLEHLIVÉ GENEROVÁNÍ PDF
+// 5. REVIZE U STOLU A GENEROWÁNÍ PDF PROTOKOLU
 // -----------------------------------------------------------------------------
 class RevisionTableScreen extends StatefulWidget {
   const RevisionTableScreen({Key? key}) : super(key: key);

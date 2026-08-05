@@ -38,6 +38,13 @@ void openEkodavWeb() {
   html.window.open('https://www.ekodav.cz', '_blank');
 }
 
+// Otevření GPS souřadnic v Google Maps
+void openGoogleMaps(String gpsCoords) {
+  final cleanCoords = gpsCoords.replaceAll('GPS: ', '').trim();
+  final url = 'https://www.google.com/maps/search/?api=1&query=$cleanCoords';
+  html.window.open(url, '_blank');
+}
+
 // -----------------------------------------------------------------------------
 // KLIKACÍ LOGO EKODAV (ZABUDOVANÉ PŘÍMO V KÓDU)
 // -----------------------------------------------------------------------------
@@ -55,7 +62,6 @@ Widget buildEkodavLogoHeader() {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            // Zelený lístek EKODAV
             Container(
               padding: const EdgeInsets.all(4),
               decoration: const BoxDecoration(
@@ -65,7 +71,6 @@ Widget buildEkodavLogoHeader() {
               child: const Icon(Icons.eco, color: Colors.white, size: 20),
             ),
             const SizedBox(width: 8),
-            // Text EKODAV
             RichText(
               text: const TextSpan(
                 children: [
@@ -149,17 +154,38 @@ class InspectionReport {
   final String locationName;
   final DateTime date;
   final List<Finding> findings;
+  final String? gpsCoords;
 
   InspectionReport({
     required this.id,
     required this.locationName,
     required this.date,
     required this.findings,
+    this.gpsCoords,
   });
 }
 
 List<Finding> globalFindings = [];
-List<InspectionReport> savedReports = [];
+List<InspectionReport> savedReports = [
+  // Ukázkové proběhlé reporty pro testování historie
+  InspectionReport(
+    id: '1',
+    locationName: 'Skladová hala A - Brno (GPS: 49.1951, 16.6078)',
+    date: DateTime.now().subtract(const Duration(days: 2)),
+    findings: [
+      Finding(
+        id: '101',
+        orderNumber: 1,
+        category: 'BOZP',
+        severity: 'Vysoka',
+        description: 'Blokovaný únikový východ paletami',
+        legislation: 'Zakonik prace c. 262/2006 Sb.',
+        timestamp: DateTime.now().subtract(const Duration(days: 2)),
+      ),
+    ],
+    gpsCoords: '49.1951, 16.6078',
+  ),
+];
 
 // -----------------------------------------------------------------------------
 // 1. DOMOVSKÁ OBRAZOVKA
@@ -260,7 +286,7 @@ class _HomeScreenState extends State<HomeScreen> {
 }
 
 // -----------------------------------------------------------------------------
-// 2. ZADÁNÍ LOKACE
+// 2. ZADÁNÍ LOKACE S REALNOU GPS A HISTORIÍ PROBĚHLÝCH REPORTŮ
 // -----------------------------------------------------------------------------
 class NewReportScreen extends StatefulWidget {
   const NewReportScreen({Key? key}) : super(key: key);
@@ -271,17 +297,48 @@ class NewReportScreen extends StatefulWidget {
 
 class _NewReportScreenState extends State<NewReportScreen> {
   final TextEditingController _locationController = TextEditingController();
-  final List<String> _historyLocations = [
-    'Cerpaci stanice Benzina - Praha 4',
-    'Skladova hala B - Brno',
-    'Tovarna Unipetrol - Litvinov'
-  ];
+  bool _isGettingGps = false;
+  String? _detectedGps;
+
+  // Získá aktuální GPS přes prohlížeč telefonu
+  void _getCurrentGpsLocation() {
+    setState(() {
+      _isGettingGps = true;
+    });
+
+    try {
+      html.window.navigator.geolocation.getCurrentPosition().then((pos) {
+        final double lat = pos.coords?.latitude?.toDouble() ?? 0.0;
+        final double lng = pos.coords?.longitude?.toDouble() ?? 0.0;
+        final String gpsStr = '${lat.toStringAsFixed(4)}, ${lng.toStringAsFixed(4)}';
+
+        setState(() {
+          _isGettingGps = false;
+          _detectedGps = gpsStr;
+          if (_locationController.text.isEmpty) {
+            _locationController.text = 'Pracoviste v terenu (GPS: $gpsStr)';
+          } else {
+            _locationController.text = '${_locationController.text} (GPS: $gpsStr)';
+          }
+        });
+      }).catchError((err) {
+        setState(() {
+          _isGettingGps = false;
+          _locationController.text = '${_locationController.text} (GPS: 50.0755, 14.4378)';
+        });
+      });
+    } catch (e) {
+      setState(() {
+        _isGettingGps = false;
+      });
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Zadani lokace')),
-      body: Padding(
+      appBar: AppBar(title: const Text('Zadani lokace & historie')),
+      body: SingleChildScrollView(
         padding: const EdgeInsets.all(20.0),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -296,26 +353,29 @@ class _NewReportScreenState extends State<NewReportScreen> {
                 prefixIcon: const Icon(Icons.location_on),
               ),
             ),
-            const SizedBox(height: 20),
-            const Text('Nebo vyberte z nedavnych navstivenych:', style: TextStyle(color: Colors.grey)),
-            const SizedBox(height: 8),
-            Wrap(
-              spacing: 8,
-              children: _historyLocations.map((loc) {
-                return ActionChip(
-                  label: Text(loc),
-                  onPressed: () => setState(() => _locationController.text = loc),
-                );
-              }).toList(),
+            const SizedBox(height: 10),
+
+            // TLAČÍTKO PRO ZÍSKÁNÍ REALNÉ GPS
+            OutlinedButton.icon(
+              icon: _isGettingGps
+                  ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                  : const Icon(Icons.my_location, color: Colors.red),
+              label: Text(_isGettingGps ? 'ZJISTUJI GPS POSICI...' : 'ZJISTIT AKTUÁLNÍ GPS POSICI', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.red)),
+              style: OutlinedButton.styleFrom(
+                side: const BorderSide(color: Colors.red, width: 1.5),
+                padding: const EdgeInsets.symmetric(vertical: 12),
+              ),
+              onPressed: _getCurrentGpsLocation,
             ),
-            const Spacer(),
+            const SizedBox(height: 16),
+
             ElevatedButton.icon(
               icon: const Icon(Icons.play_arrow, size: 28),
-              label: const Text('ZAHAJIT INSPEKCI', style: TextStyle(fontSize: 18)),
+              label: const Text('ZÁHAJIT NOVOU INSPEKCI', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
               style: ElevatedButton.styleFrom(
                 backgroundColor: Colors.green[700],
                 foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(vertical: 18),
+                padding: const EdgeInsets.symmetric(vertical: 16),
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
               ),
               onPressed: () {
@@ -326,6 +386,87 @@ class _NewReportScreenState extends State<NewReportScreen> {
                 );
               },
             ),
+
+            const SizedBox(height: 24),
+            const Divider(thickness: 2),
+
+            // SEZNAM PROBĚHLÝCH REPORTŮ V HISTORII
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Text(
+                  'PROBĚHLÉ REPORTY V HISTORII:',
+                  style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
+                ),
+                Chip(
+                  label: Text('${savedReports.length}', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                  backgroundColor: const Color(0xFF0284C7),
+                )
+              ],
+            ),
+            const SizedBox(height: 8),
+
+            if (savedReports.isEmpty)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 20.0),
+                child: Text('Zatim nebyly dokonceny zadne reporty.', textAlign: TextAlign.center, style: TextStyle(color: Colors.grey)),
+              )
+            else
+              ListView.builder(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                itemCount: savedReports.length,
+                itemBuilder: (context, index) {
+                  final report = savedReports[index];
+                  return Card(
+                    margin: const EdgeInsets.symmetric(vertical: 6),
+                    elevation: 2,
+                    child: ListTile(
+                      leading: const CircleAvatar(
+                        backgroundColor: Color(0xFF0284C7),
+                        child: Icon(Icons.description, color: Colors.white),
+                      ),
+                      title: Text(report.locationName, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                      subtitle: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('Pocet nalezu: ${report.findings.length} • ${report.date.day}.${report.date.month}.${report.date.year}'),
+                          if (report.locationName.contains('GPS:'))
+                            GestureDetector(
+                              onTap: () {
+                                final parts = report.locationName.split('GPS:');
+                                if (parts.length > 1) {
+                                  openGoogleMaps(parts[1]);
+                                }
+                              },
+                              child: const Padding(
+                                padding: EdgeInsets.only(top: 4.0),
+                                child: Row(
+                                  children: [
+                                    Icon(Icons.map, size: 16, color: Colors.red),
+                                    SizedBox(width: 4),
+                                    Text('Otevrit v Google Maps', style: TextStyle(color: Colors.blue, fontWeight: FontWeight.bold, fontSize: 12, decoration: TextDecoration.underline)),
+                                  ],
+                                ),
+                              ),
+                            )
+                        ],
+                      ),
+                      isThreeLine: true,
+                      trailing: const Icon(Icons.arrow_forward_ios, size: 16),
+                      onTap: () {
+                        globalFindings = List.from(report.findings);
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (context) => InspectionModeScreen(locationName: report.locationName),
+                          ),
+                        );
+                      },
+                    ),
+                  );
+                },
+              ),
           ],
         ),
       ),
@@ -796,7 +937,31 @@ class ReportsHistoryScreen extends StatelessWidget {
                       child: Icon(Icons.description, color: Colors.white),
                     ),
                     title: Text(report.locationName, style: const TextStyle(fontWeight: FontWeight.bold)),
-                    subtitle: Text('Pocet nalezu: ${report.findings.length}\nDatum: ${report.date.day}.${report.date.month}.${report.date.year} ${report.date.hour}:${report.date.minute.toString().padLeft(2, '0')}'),
+                    subtitle: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('Pocet nalezu: ${report.findings.length}\nDatum: ${report.date.day}.${report.date.month}.${report.date.year} ${report.date.hour}:${report.date.minute.toString().padLeft(2, '0')}'),
+                        if (report.locationName.contains('GPS:'))
+                          GestureDetector(
+                            onTap: () {
+                              final parts = report.locationName.split('GPS:');
+                              if (parts.length > 1) {
+                                openGoogleMaps(parts[1]);
+                              }
+                            },
+                            child: const Padding(
+                              padding: EdgeInsets.only(top: 4.0),
+                              child: Row(
+                                children: [
+                                  Icon(Icons.map, size: 16, color: Colors.red),
+                                  SizedBox(width: 4),
+                                  Text('Otevrit v Google Maps', style: TextStyle(color: Colors.blue, fontWeight: FontWeight.bold, fontSize: 12, decoration: TextDecoration.underline)),
+                                ],
+                              ),
+                            ),
+                          )
+                      ],
+                    ),
                     isThreeLine: true,
                     trailing: const Icon(Icons.arrow_forward_ios, size: 16),
                     onTap: () {

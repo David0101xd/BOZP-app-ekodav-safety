@@ -50,11 +50,11 @@ Set<String> subLocationHistory = {'Sklad', 'Parkoviště', 'Rampa', 'Dílna', 'K
 // -----------------------------------------------------------------------------
 class LegislationRule {
   final String id;
-  String category; // Oblast (BOZP, PO...)
-  String lawNumber; // Číslo legislativy (nepovinné)
-  String paragraph; // Paragraf (povinné)
-  String citation; // Citace (nepovinné)
-  String subjectDescription; // Čeho se týká (popis pro vyhodnocování)
+  String category;
+  String lawNumber;
+  String paragraph;
+  String citation;
+  String subjectDescription;
 
   LegislationRule({
     required this.id,
@@ -73,7 +73,6 @@ class LegislationRule {
   }
 }
 
-// Znalostní báze čerpané legislativy a norem
 List<LegislationRule> globalLegislationDatabase = [
   LegislationRule(
     id: '1',
@@ -97,11 +96,10 @@ List<LegislationRule> globalLegislationDatabase = [
     lawNumber: '101/2005 Sb.',
     paragraph: 'Příloha č. 3',
     citation: 'Únikové cesty a východy musejí zůstat trvale volné.',
-    subjectDescription: 'blokovaný únikový východ, palety na chodbe',
+    subjectDescription: 'blokovaný únikový východ, palety na chodbě',
   ),
 ];
 
-// Horní malé logo v liště
 Widget buildEkodavLogoHeader() {
   return GestureDetector(
     onTap: openEkodavWeb,
@@ -150,7 +148,6 @@ Widget buildEkodavLogoHeader() {
   );
 }
 
-// Velké logo pro domovskou stránku
 Widget buildEkodavMainLogo() {
   return GestureDetector(
     onTap: openEkodavWeb,
@@ -287,7 +284,7 @@ List<InspectionReport> savedReports = [
 ];
 
 // -----------------------------------------------------------------------------
-// 1. DOMOVSKÁ OBRAZOVKA (3 TLAČÍTKA + ČTVRTÉ VYHRAZENÉ PRO LEGISLATIVU)
+// 1. DOMOVSKÁ OBRAZOVKA
 // -----------------------------------------------------------------------------
 class HomeScreen extends StatefulWidget {
   const HomeScreen({Key? key}) : super(key: key);
@@ -326,7 +323,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       ),
                       const SizedBox(height: 25),
 
-                      // TLAČÍTKO 1: NOVÝ REPORT (V TERÉNU)
+                      // TLAČÍTKO 1
                       ElevatedButton.icon(
                         icon: const Icon(Icons.add_a_photo, size: 24),
                         label: const Text('NOVÝ REPORT (V TERÉNU)', style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
@@ -346,7 +343,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       ),
                       const SizedBox(height: 10),
 
-                      // TLAČÍTKO 2: REVIZE REPORTU (U STOLU)
+                      // TLAČÍTKO 2
                       OutlinedButton.icon(
                         icon: const Icon(Icons.table_chart, size: 24),
                         label: Text('REVIZE REPORTU (U STOLU) (${globalFindings.length})', style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
@@ -366,7 +363,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       ),
                       const SizedBox(height: 10),
 
-                      // TLAČÍTKO 3: HISTORIE REPORTŮ
+                      // TLAČÍTKO 3
                       OutlinedButton.icon(
                         icon: const Icon(Icons.folder_open, size: 24),
                         label: Text('HISTORIE REPORTŮ (${savedReports.length})', style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
@@ -388,7 +385,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       const Divider(thickness: 1.5),
                       const SizedBox(height: 10),
 
-                      // TLAČÍTKO 4: SPRÁVA LEGISLATIVY (POD PŮVODNÍMI TLAČÍTKY)
+                      // TLAČÍTKO 4 (SAMOSTATNĚ DOLE)
                       ElevatedButton.icon(
                         icon: const Icon(Icons.gavel, size: 22),
                         label: Text('SPRÁVA LEGISLATIVY (${globalLegislationDatabase.length})', style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
@@ -434,7 +431,7 @@ class _HomeScreenState extends State<HomeScreen> {
 }
 
 // -----------------------------------------------------------------------------
-// SEZNAM A SPRÁVA ČERPANÉ LEGISLATIVY PRO VYHODNOCOVÁNÍ FOTEK
+// SPRÁVA LEGISLATIVY
 // -----------------------------------------------------------------------------
 class LegislationManagerScreen extends StatefulWidget {
   const LegislationManagerScreen({Key? key}) : super(key: key);
@@ -1434,9 +1431,6 @@ class ReportsHistoryScreen extends StatelessWidget {
   }
 }
 
-// -----------------------------------------------------------------------------
-// REVIZE REPORTU U STOLU
-// -----------------------------------------------------------------------------
 class RevisionTableScreen extends StatefulWidget {
   const RevisionTableScreen({Key? key}) : super(key: key);
 

@@ -40,7 +40,7 @@ Future<void> openEkodavWeb() async {
 }
 
 Future<void> openGoogleMaps(String gpsCoords) async {
-  final cleanCoords = gpsCoords.replaceAll('GPS: ', '').trim();
+  final cleanCoords = gpsCoords.replaceAll('GPS:', '').trim();
   final Uri url = Uri.parse('https://www.google.com/maps/search/?api=1&query=$cleanCoords');
   if (!await launchUrl(url, mode: LaunchMode.externalApplication)) {
     debugPrint('Could not launch $url');
@@ -252,6 +252,8 @@ class Finding {
 class InspectionReport {
   final String id;
   final String companyName;
+  final String companyIco;
+  final String companyAddress;
   final String locationName;
   final DateTime date;
   final List<Finding> findings;
@@ -260,6 +262,8 @@ class InspectionReport {
   InspectionReport({
     required this.id,
     this.companyName = '',
+    this.companyIco = '',
+    this.companyAddress = '',
     required this.locationName,
     required this.date,
     required this.findings,
@@ -272,7 +276,9 @@ List<InspectionReport> savedReports = [
   InspectionReport(
     id: '1',
     companyName: 'BENZINA s.r.o.',
-    locationName: 'Skladová hala A - Brno (GPS: 49.1951, 16.6078)',
+    companyIco: '12345678',
+    companyAddress: 'Milevská 2095/5, Praha 4',
+    locationName: 'Skladová hala A - Brno',
     date: DateTime.now().subtract(const Duration(days: 2)),
     findings: [
       Finding(
@@ -710,7 +716,10 @@ class NewReportScreen extends StatefulWidget {
 
 class _NewReportScreenState extends State<NewReportScreen> {
   final TextEditingController _companyController = TextEditingController();
+  final TextEditingController _icoController = TextEditingController();
+  final TextEditingController _addressController = TextEditingController();
   final TextEditingController _locationController = TextEditingController();
+  String? _gpsCoords;
 
   Set<String> get _recentLocationChips {
     final Set<String> chips = {};
@@ -719,9 +728,19 @@ class _NewReportScreenState extends State<NewReportScreen> {
       if (report.locationName.isNotEmpty) chips.add(report.locationName.split('(GPS:')[0].trim());
     }
     if (chips.isEmpty) {
-      chips.addAll(['Benzina s.r.o.', 'Čerpací stanice MOL', 'Skladová hala A', 'Unipetrol']);
+      chips.addAll(['BENZINA s.r.o.', 'Čerpací stanice MOL', 'Skladová hala A', 'Unipetrol']);
     }
     return chips;
+  }
+
+  void _getGpsLocation() {
+    // Simulace zjištění GPS pozice
+    setState(() {
+      _gpsCoords = '50.0755, 14.4378'; // Praha / Výchozí souradnice
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('📍 GPS pozice byla úspěšně načtena!'), backgroundColor: Colors.green),
+      );
+    });
   }
 
   void _startInspection() {
@@ -734,8 +753,10 @@ class _NewReportScreenState extends State<NewReportScreen> {
       context,
       MaterialPageRoute(
         builder: (context) => InspectionModeScreen(
-          locationName: loc,
+          locationName: _gpsCoords != null ? '$loc (GPS: $_gpsCoords)' : loc,
           companyName: comp,
+          companyIco: _icoController.text.trim(),
+          companyAddress: _addressController.text.trim(),
         ),
       ),
     );
@@ -750,29 +771,67 @@ class _NewReportScreenState extends State<NewReportScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            const Text('Firma / Klient (pro OR / ARES):', style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 6),
+            // SEKCIE KONTROLOVANÝ SUBJEKT
+            const Text('KONTROLOVANÝ SUBJEKT (FIRMA):', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Color(0xFF0284C7))),
+            const SizedBox(height: 8),
+
             TextField(
               controller: _companyController,
               decoration: InputDecoration(
-                hintText: 'Zadejte název firmy nebo IČO...',
+                labelText: 'Název firmy',
+                hintText: 'např. BENZINA s.r.o.',
                 border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
                 prefixIcon: const Icon(Icons.business, color: Color(0xFF0284C7)),
-                suffixIcon: IconButton(
-                  icon: const Icon(Icons.search, color: Colors.blue),
-                  tooltip: 'Našeptat z OR / ARES',
-                  onPressed: () {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Propojení na Obchodní rejstřík ARES je připraveno.')),
-                    );
-                  },
-                ),
               ),
             ),
-            const SizedBox(height: 16),
+            const SizedBox(height: 10),
 
-            const Text('Zadejte název lokace / pracoviště / provozovny:', style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 6),
+            Row(
+              children: [
+                Expanded(
+                  flex: 2,
+                  child: TextField(
+                    controller: _icoController,
+                    decoration: InputDecoration(
+                      labelText: 'IČO',
+                      hintText: '12345678',
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                      prefixIcon: const Icon(Icons.numbers, color: Color(0xFF0284C7)),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  flex: 3,
+                  child: TextField(
+                    controller: _addressController,
+                    decoration: InputDecoration(
+                      labelText: 'Sídlo / Adresa',
+                      hintText: 'Praha 4',
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                      prefixIcon: const Icon(Icons.home, color: Color(0xFF0284C7)),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 18),
+
+            // NÁZEV PROVOZOVNY S TLAČÍTKEM PRO GPS
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Expanded(
+                  child: Text('Zadejte název lokace / pracoviště / provozovny:', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
+                ),
+                TextButton.icon(
+                  onPressed: _getGpsLocation,
+                  icon: Icon(Icons.my_location, size: 18, color: _gpsCoords != null ? Colors.green : Colors.red),
+                  label: Text(_gpsCoords != null ? 'GPS Načtena' : 'Získat GPS', style: TextStyle(color: _gpsCoords != null ? Colors.green : Colors.red, fontWeight: FontWeight.bold, fontSize: 12)),
+                )
+              ],
+            ),
+            const SizedBox(height: 4),
             TextField(
               controller: _locationController,
               decoration: InputDecoration(
@@ -900,6 +959,8 @@ class _NewReportScreenState extends State<NewReportScreen> {
                             builder: (context) => InspectionModeScreen(
                               locationName: report.locationName,
                               companyName: report.companyName,
+                              companyIco: report.companyIco,
+                              companyAddress: report.companyAddress,
                             ),
                           ),
                         );
@@ -921,10 +982,15 @@ class _NewReportScreenState extends State<NewReportScreen> {
 class InspectionModeScreen extends StatefulWidget {
   final String locationName;
   final String companyName;
+  final String companyIco;
+  final String companyAddress;
+
   const InspectionModeScreen({
     Key? key,
     required this.locationName,
     this.companyName = '',
+    this.companyIco = '',
+    this.companyAddress = '',
   }) : super(key: key);
 
   @override
@@ -1060,7 +1126,7 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
           orderNumber: globalFindings.length + 1,
           category: _selectedCategory,
           severity: _selectedSeverity,
-          description: _noteController.text.isEmpty ? 'Nález bez poznámky' : _noteController.text,
+          description: _noteController.text.isEmpty ? 'Nález bez poznámky' : _noteController.text;
           locationDetail: placeText,
           legislation: matchedLegislation,
           photoBytes: _currentPhotoBytes,
@@ -1105,6 +1171,8 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
       final report = InspectionReport(
         id: DateTime.now().millisecondsSinceEpoch.toString(),
         companyName: widget.companyName,
+        companyIco: widget.companyIco,
+        companyAddress: widget.companyAddress,
         locationName: widget.locationName,
         date: DateTime.now(),
         findings: List.from(globalFindings),
@@ -1434,6 +1502,7 @@ class ReportsHistoryScreen extends StatelessWidget {
                     subtitle: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
+                        if (report.companyIco.isNotEmpty) Text('IČO: ${report.companyIco} • Sídlo: ${report.companyAddress}'),
                         Text('Počet nálezů: ${report.findings.length}\nDatum: ${report.date.day}.${report.date.month}.${report.date.year} ${report.date.hour}:${report.date.minute.toString().padLeft(2, '0')}'),
                         if (report.locationName.contains('GPS:'))
                           GestureDetector(
@@ -1466,6 +1535,8 @@ class ReportsHistoryScreen extends StatelessWidget {
                           builder: (context) => InspectionModeScreen(
                             locationName: report.locationName,
                             companyName: report.companyName,
+                            companyIco: report.companyIco,
+                            companyAddress: report.companyAddress,
                           ),
                         ),
                       );

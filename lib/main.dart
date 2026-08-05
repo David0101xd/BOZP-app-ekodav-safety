@@ -1,11 +1,10 @@
-import 'dart:convert';
-import 'dart:html' as html;
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 void main() {
   runApp(const EkodavSafetyApp());
@@ -33,14 +32,19 @@ class EkodavSafetyApp extends StatelessWidget {
   }
 }
 
-void openEkodavWeb() {
-  html.window.open('https://www.ekodav.cz', '_blank');
+Future<void> openEkodavWeb() async {
+  final Uri url = Uri.parse('https://www.ekodav.cz');
+  if (!await launchUrl(url, mode: LaunchMode.externalApplication)) {
+    debugPrint('Could not launch $url');
+  }
 }
 
-void openGoogleMaps(String gpsCoords) {
+Future<void> openGoogleMaps(String gpsCoords) async {
   final cleanCoords = gpsCoords.replaceAll('GPS: ', '').trim();
-  final url = 'https://www.google.com/maps/search/?api=1&query=$cleanCoords';
-  html.window.open(url, '_blank');
+  final Uri url = Uri.parse('https://www.google.com/maps/search/?api=1&query=$cleanCoords');
+  if (!await launchUrl(url, mode: LaunchMode.externalApplication)) {
+    debugPrint('Could not launch $url');
+  }
 }
 
 Set<String> subLocationHistory = {'Sklad', 'Parkoviště', 'Rampa', 'Dílna', 'Kanceláře', 'Výrobní hala'};
@@ -703,39 +707,6 @@ class NewReportScreen extends StatefulWidget {
 
 class _NewReportScreenState extends State<NewReportScreen> {
   final TextEditingController _locationController = TextEditingController();
-  bool _isGettingGps = false;
-
-  void _getCurrentGpsLocation() {
-    setState(() {
-      _isGettingGps = true;
-    });
-
-    try {
-      html.window.navigator.geolocation.getCurrentPosition().then((pos) {
-        final double lat = pos.coords?.latitude?.toDouble() ?? 0.0;
-        final double lng = pos.coords?.longitude?.toDouble() ?? 0.0;
-        final String gpsStr = '${lat.toStringAsFixed(4)}, ${lng.toStringAsFixed(4)}';
-
-        setState(() {
-          _isGettingGps = false;
-          if (_locationController.text.isEmpty) {
-            _locationController.text = 'Pracoviště v terénu (GPS: $gpsStr)';
-          } else {
-            _locationController.text = '${_locationController.text} (GPS: $gpsStr)';
-          }
-        });
-      }).catchError((err) {
-        setState(() {
-          _isGettingGps = false;
-          _locationController.text = '${_locationController.text} (GPS: 50.0755, 14.4378)';
-        });
-      });
-    } catch (e) {
-      setState(() {
-        _isGettingGps = false;
-      });
-    }
-  }
 
   void _startInspection() {
     String loc = _locationController.text.trim();
@@ -766,19 +737,6 @@ class _NewReportScreenState extends State<NewReportScreen> {
                 border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
                 prefixIcon: const Icon(Icons.location_on),
               ),
-            ),
-            const SizedBox(height: 10),
-
-            OutlinedButton.icon(
-              icon: _isGettingGps
-                  ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
-                  : const Icon(Icons.my_location, color: Colors.red),
-              label: Text(_isGettingGps ? 'ZJIŠŤUJI GPS POZICI...' : 'ZJISTIT AKTUÁLNÍ GPS POZICI', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.red)),
-              style: OutlinedButton.styleFrom(
-                side: const BorderSide(color: Colors.red, width: 1.5),
-                padding: const EdgeInsets.symmetric(vertical: 12),
-              ),
-              onPressed: _getCurrentGpsLocation,
             ),
             const SizedBox(height: 16),
 
@@ -1020,7 +978,7 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
           orderNumber: globalFindings.length + 1,
           category: _selectedCategory,
           severity: _selectedSeverity,
-          description: _noteController.text.isEmpty ? 'Nález bez poznámky' : _noteController.text;
+          description: _noteController.text.isEmpty ? 'Nález bez poznámky' : _noteController.text,
           locationDetail: placeText,
           legislation: matchedLegislation,
           photoBytes: _currentPhotoBytes,

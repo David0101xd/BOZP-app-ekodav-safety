@@ -1,28 +1,25 @@
-name: Deploy Flutter Web to GitHub Pages
+name: ekodav_safety
+description: BOZP a PO inspekcni aplikace
 
-on:
-  push:
-    branches:
-      - main
+publish_to: 'none'
 
-permissions:
-  contents: write
+version: 1.0.0+1
 
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
+environment:
+  sdk: '>=3.0.0 <4.0.0'
 
-      - uses: subosito/flutter-action@v2
-        with:
-          channel: 'stable'
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.2
+  image_picker: ^1.0.7
+  pdf: ^3.10.8
+  printing: ^5.11.0
+  url_launcher: ^6.2.5
 
-      - run: flutter pub get
-      - run: flutter build web --release --base-href "/${{ github.event.repository.name }}/"
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
 
-      - name: Deploy to GitHub Pages
-        uses: peaceiris/actions-gh-pages@v3
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./build/web
+flutter:
+  uses-material-design: true

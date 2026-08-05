@@ -33,24 +33,19 @@ class EkodavSafetyApp extends StatelessWidget {
   }
 }
 
-// Odkaz na www.ekodav.cz
 void openEkodavWeb() {
   html.window.open('https://www.ekodav.cz', '_blank');
 }
 
-// Otevření GPS souřadnic v Google Maps
 void openGoogleMaps(String gpsCoords) {
   final cleanCoords = gpsCoords.replaceAll('GPS: ', '').trim();
   final url = 'https://www.google.com/maps/search/?api=1&query=$cleanCoords';
   html.window.open(url, '_blank');
 }
 
-// Globální prediktivní historie zadaných míst
 Set<String> subLocationHistory = {'Sklad', 'Parkoviště', 'Rampa', 'Dílna', 'Kanceláře', 'Výrobní hala'};
 
-// -----------------------------------------------------------------------------
-// KLIKACÍ LOGO EKODAV
-// -----------------------------------------------------------------------------
+// Horní malé klikací logo v liště
 Widget buildEkodavLogoHeader() {
   return GestureDetector(
     onTap: openEkodavWeb,
@@ -71,7 +66,7 @@ Widget buildEkodavLogoHeader() {
                 color: Color(0xFF10B981),
                 shape: BoxShape.circle,
               ),
-              child: const Icon(Icons.eco, color: Colors.white, size: 20),
+              child: const Icon(Icons.eco, color: Colors.white, size: 18),
             ),
             const SizedBox(width: 8),
             RichText(
@@ -79,15 +74,15 @@ Widget buildEkodavLogoHeader() {
                 children: [
                   TextSpan(
                     text: 'EKO',
-                    style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 18),
+                    style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16),
                   ),
                   TextSpan(
                     text: 'DAV',
-                    style: TextStyle(color: Color(0xFF34D399), fontWeight: FontWeight.bold, fontSize: 18),
+                    style: TextStyle(color: Color(0xFF34D399), fontWeight: FontWeight.bold, fontSize: 16),
                   ),
                   TextSpan(
                     text: ' SAFETY',
-                    style: TextStyle(color: Colors.grey, fontSize: 12, fontWeight: FontWeight.w300),
+                    style: TextStyle(color: Colors.grey, fontSize: 11, fontWeight: FontWeight.w300),
                   ),
                 ],
               ),
@@ -99,9 +94,80 @@ Widget buildEkodavLogoHeader() {
   );
 }
 
-// -----------------------------------------------------------------------------
-// LEGISLATIVA PŘEDVYPLNĚNÁ PODLE KATEGORIE (S PLNOU ČEŠTINOU)
-// -----------------------------------------------------------------------------
+// Velké logo z obrázku přímo pro domovskou stránku
+Widget buildEkodavMainLogo() {
+  return GestureDetector(
+    onTap: openEkodavWeb,
+    child: MouseRegion(
+      cursor: SystemMouseCursors.click,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              // Nápis EK + Lístek + DAV
+              const Text(
+                'EK',
+                style: TextStyle(fontSize: 34, fontWeight: FontWeight.w900, color: Color(0xFF0F172A), letterSpacing: 0.5),
+              ),
+              Stack(
+                alignment: Alignment.center,
+                children: [
+                  const Text(
+                    'O',
+                    style: TextStyle(fontSize: 34, fontWeight: FontWeight.w900, color: Color(0xFF0F172A)),
+                  ),
+                  Positioned(
+                    top: 6,
+                    child: Transform.rotate(
+                      angle: -0.2,
+                      child: const Icon(Icons.eco, size: 20, color: Color(0xFF10B981)),
+                    ),
+                  ),
+                ],
+              ),
+              const Text(
+                'DAV',
+                style: TextStyle(fontSize: 34, fontWeight: FontWeight.w900, color: Color(0xFF0F172A), letterSpacing: 0.5),
+              ),
+              const SizedBox(width: 8),
+              // Zmíněný černý box SAFETY s oranžovým textem
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1E293B),
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: const Text(
+                  'SAFETY',
+                  style: TextStyle(
+                    fontSize: 26,
+                    fontWeight: FontWeight.bold,
+                    color: Color(0xFFF59E0B),
+                    letterSpacing: 2.0,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          const Text(
+            'BOZP, PO, EKO',
+            style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF334155), letterSpacing: 3.0),
+          ),
+          const SizedBox(height: 2),
+          const Text(
+            'OBNOVITELNÉ ENERGIE',
+            style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Color(0xFF64748B), letterSpacing: 2.5),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
 String getDefaultLegislation(String category) {
   switch (category) {
     case 'BOZP':
@@ -123,9 +189,6 @@ String getDefaultLegislation(String category) {
   }
 }
 
-// -----------------------------------------------------------------------------
-// DATOVÉ MODELY
-// -----------------------------------------------------------------------------
 class Finding {
   final String id;
   int orderNumber;
@@ -209,79 +272,107 @@ class _HomeScreenState extends State<HomeScreen> {
         centerTitle: true,
         title: buildEkodavLogoHeader(),
       ),
-      body: Padding(
-        padding: const EdgeInsets.all(20.0),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            GestureDetector(
-              onTap: openEkodavWeb,
-              child: const Icon(Icons.shield_outlined, size: 80, color: Color(0xFF0284C7)),
-            ),
-            const SizedBox(height: 10),
-            const Text(
-              'Inspekce BOZP a PO v terénu',
-              textAlign: TextAlign.center,
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w500, color: Colors.grey),
-            ),
-            const SizedBox(height: 30),
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 20.0, vertical: 16.0),
+          child: Column(
+            children: [
+              Expanded(
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      const SizedBox(height: 20),
+                      // NOVÉ LOGO ANAMŠTÍT
+                      buildEkodavMainLogo(),
+                      const SizedBox(height: 16),
+                      const Text(
+                        'Inspekce BOZP a PO v terénu',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(fontSize: 16, fontWeight: FontWeight.w500, color: Colors.grey),
+                      ),
+                      const SizedBox(height: 35),
 
-            ElevatedButton.icon(
-              icon: const Icon(Icons.add_a_photo, size: 26),
-              label: const Text('NOVÝ REPORT (V TERÉNU)', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF0284C7),
-                foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(vertical: 18),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-              ),
-              onPressed: () async {
-                await Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (context) => const NewReportScreen()),
-                );
-                setState(() {});
-              },
-            ),
-            const SizedBox(height: 12),
+                      // TLAČÍTKO 1: NOVÝ REPORT (V TERÉNU)
+                      ElevatedButton.icon(
+                        icon: const Icon(Icons.add_a_photo, size: 24),
+                        label: const Text('NOVÝ REPORT (V TERÉNU)', style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFF0284C7),
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(vertical: 18),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        ),
+                        onPressed: () async {
+                          await Navigator.push(
+                            context,
+                            MaterialPageRoute(builder: (context) => const NewReportScreen()),
+                          );
+                          setState(() {});
+                        },
+                      ),
+                      const SizedBox(height: 12),
 
-            OutlinedButton.icon(
-              icon: const Icon(Icons.table_chart, size: 26),
-              label: Text('REVIZE U STOLU (${globalFindings.length} NÁLEZŮ)', style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
-              style: OutlinedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(vertical: 16),
-                side: const BorderSide(color: Color(0xFF0F172A), width: 2),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-              ),
-              onPressed: () async {
-                await Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (context) => const RevisionTableScreen()),
-                );
-                setState(() {});
-              },
-            ),
-            const SizedBox(height: 12),
+                      // TLAČÍTKO 2: REVIZE REPORTU (U STOLU)
+                      OutlinedButton.icon(
+                        icon: const Icon(Icons.table_chart, size: 24),
+                        label: Text('REVIZE REPORTU (U STOLU) (${globalFindings.length})', style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+                        style: OutlinedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(vertical: 16),
+                          foregroundColor: const Color(0xFF0F172A),
+                          side: const BorderSide(color: Color(0xFF0F172A), width: 2),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        ),
+                        onPressed: () async {
+                          await Navigator.push(
+                            context,
+                            MaterialPageRoute(builder: (context) => const RevisionTableScreen()),
+                          );
+                          setState(() {});
+                        },
+                      ),
+                      const SizedBox(height: 12),
 
-            OutlinedButton.icon(
-              icon: const Icon(Icons.folder_open, size: 26),
-              label: Text('HISTORIE REPORTŮ (${savedReports.length})', style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
-              style: OutlinedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(vertical: 16),
-                foregroundColor: Colors.grey[800],
-                side: BorderSide(color: Colors.grey[600]!, width: 1.5),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      // TLAČÍTKO 3: HISTORIE REPORTŮ
+                      OutlinedButton.icon(
+                        icon: const Icon(Icons.folder_open, size: 24),
+                        label: Text('HISTORIE REPORTŮ (${savedReports.length})', style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+                        style: OutlinedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(vertical: 16),
+                          foregroundColor: Colors.grey[800],
+                          side: BorderSide(color: Colors.grey[600]!, width: 1.5),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        ),
+                        onPressed: () async {
+                          await Navigator.push(
+                            context,
+                            MaterialPageRoute(builder: (context) => const ReportsHistoryScreen()),
+                          );
+                          setState(() {});
+                        },
+                      ),
+                    ],
+                  ),
+                ),
               ),
-              onPressed: () async {
-                await Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (context) => const ReportsHistoryScreen()),
-                );
-                setState(() {});
-              },
-            ),
-          ],
+
+              // DŮLEŽITÝ LEGAL FOOTER
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.grey[100],
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.grey[300]!),
+                ),
+                child: const Text(
+                  'Aplikace je vlastnictvím společnosti EKODAV SAFETY s.r.o., se sídlem Černokostelecká 1806/123, Strašnice, 100 00 Praha 10, IČO: 19161930, zapsané v obchodním rejstříku vedeném Městským soudem v Praze, spis. zn. C 382362.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 10, color: Colors.grey, height: 1.3),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -734,7 +825,6 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
                 ),
               ),
 
-            // 1. OBRÁZEK / VYFOCENÍ
             GestureDetector(
               onTap: _showImageSourceDialog,
               child: Container(
@@ -782,7 +872,6 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
             ),
             const SizedBox(height: 14),
 
-            // MÍSTO NÁLEZU S PREDIKTIVNÍ HISTORIÍ
             const Text('Místo / Upřesnění lokace nálezu:', style: TextStyle(fontWeight: FontWeight.bold)),
             const SizedBox(height: 4),
             TextField(
@@ -813,7 +902,6 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
             ),
             const SizedBox(height: 14),
 
-            // 2. KATEGORIE
             const Text('2. Kategorie:', style: TextStyle(fontWeight: FontWeight.bold)),
             const SizedBox(height: 4),
             Wrap(
@@ -832,7 +920,6 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
             ),
             const SizedBox(height: 12),
 
-            // 3. ZÁVAŽNOST
             const Text('3. Závažnost:', style: TextStyle(fontWeight: FontWeight.bold)),
             const SizedBox(height: 4),
             Row(
@@ -862,7 +949,6 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
             ),
             const SizedBox(height: 12),
 
-            // 4. POPIS
             TextField(
               controller: _noteController,
               decoration: const InputDecoration(
@@ -1029,9 +1115,6 @@ class ReportsHistoryScreen extends StatelessWidget {
   }
 }
 
-// -----------------------------------------------------------------------------
-// 5. REVIZE U STOLU A GENEROWÁNÍ PDF PROTOKOLU
-// -----------------------------------------------------------------------------
 class RevisionTableScreen extends StatefulWidget {
   const RevisionTableScreen({Key? key}) : super(key: key);
 
@@ -1123,7 +1206,7 @@ class _RevisionTableScreenState extends State<RevisionTableScreen> {
                       mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
                       children: [
                         pw.Text('Nalez #${f.orderNumber} - ${f.category}', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 13)),
-                        pw.Text('Zavaznost: ${f.severity}', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, color: f.severity == 'Vysoka' || f.severity == 'Vysoká' ? PdfColors.red : PdfColors.orange800)),
+                        pw.Text('Zavaznost: ${f.severity}', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, color: f.severity == 'Vysoká' || f.severity == 'Vysoka' ? PdfColors.red : PdfColors.orange800)),
                       ],
                     ),
                     pw.SizedBox(height: 4),
@@ -1292,7 +1375,7 @@ class _RevisionTableScreenState extends State<RevisionTableScreen> {
                   padding: const EdgeInsets.all(16.0),
                   child: ElevatedButton.icon(
                     icon: const Icon(Icons.print, size: 28),
-                    label: const Text('GENEROTOVAT REPORT (PDF / EXPORT)', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                    label: const Text('GENERATOVAT REPORT (PDF / EXPORT)', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                     style: ElevatedButton.styleFrom(
                       backgroundColor: Colors.green[700],
                       foregroundColor: Colors.white,

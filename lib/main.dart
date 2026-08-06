@@ -1,5 +1,7 @@
+import 'dart:convert';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
@@ -112,7 +114,7 @@ Widget buildEkodavLogoHeader() {
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
         decoration: BoxDecoration(
-          color: Colors.white.withOpacity(0.1),
+          color: Colors.white.withValues(alpha: 0.1),
           borderRadius: BorderRadius.circular(8),
         ),
         child: Row(
@@ -488,7 +490,7 @@ class _LegislationManagerScreenState extends State<LegislationManagerScreen> {
                   const Text('Oblast (BOZP / PO...): *', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
                   const SizedBox(height: 4),
                   DropdownButtonFormField<String>(
-                    value: selectedCat,
+                    initialValue: selectedCat,
                     decoration: InputDecoration(
                       border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
                       contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
@@ -716,6 +718,7 @@ class _NewReportScreenState extends State<NewReportScreen> {
   final TextEditingController _addressController = TextEditingController();
   final TextEditingController _locationController = TextEditingController();
   String? _gpsCoords;
+  bool _isLoadingAres = false;
 
   Set<String> get _recentLocationChips {
     final Set<String> chips = {};
@@ -736,6 +739,150 @@ class _NewReportScreenState extends State<NewReportScreen> {
         const SnackBar(content: Text('📍 GPS pozice byla úspěšně načtena!'), backgroundColor: Colors.green),
       );
     });
+  }
+
+  Future<void> _fetchAresData(String ico) async {
+    final cleanIco = ico.replaceAll(RegExp(r'\s+'), '');
+    if (cleanIco.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('⚠️ Vyplňte prosím IČO.'), backgroundColor: Colors.red),
+      );
+      return;
+    }
+
+    setState(() {
+      _isLoadingAres = true;
+    });
+
+    try {
+      final url = Uri.parse('https://ares.gov.cz/ares/nesstar/v1/ekonomicke-subjekty/$cleanIco');
+      final response = await http.get(url, headers: {
+        'Accept': 'application/json',
+      });
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
+        
+        final String companyName = (data['obchodniJmeno'] ?? '') as String;
+        final String actualIco = (data['ico'] ?? cleanIco) as String;
+        
+        final Map<String, dynamic>? sidlo = data['sidlo'] as Map<String, dynamic>?;
+        String street = '';
+        String houseNumber = '';
+        String city = '';
+        String zip = '';
+
+        if (sidlo != null) {
+          street = sidlo['nazevUlice']?.toString() ?? '';
+          if (street.isEmpty) {
+            street = sidlo['nazevCastiObce']?.toString() ?? sidlo['nazevObce']?.toString() ?? '';
+          }
+
+          final cisloDomovni = sidlo['cisloDomovni'];
+          final cisloOrientacni = sidlo['cisloOrientacni'];
+          final cisloOrientacniPismeno = sidlo['cisloOrientacniPismeno'];
+
+          if (cisloDomovni != null && cisloOrientacni != null) {
+            houseNumber = '$cisloDomovni/$cisloOrientacni';
+          } else if (cisloDomovni != null) {
+            houseNumber = '$cisloDomovni';
+          } else if (cisloOrientacni != null) {
+            houseNumber = '$cisloOrientacni';
+          }
+
+          if (cisloOrientacniPismeno != null && cisloOrientacniPismeno.toString().isNotEmpty) {
+            houseNumber += cisloOrientacniPismeno.toString();
+          }
+
+          final String nazevObce = sidlo['nazevObce']?.toString() ?? '';
+          final String nazevCastiObce = sidlo['nazevCastiObce']?.toString() ?? '';
+          if (nazevObce.isNotEmpty && nazevCastiObce.isNotEmpty && nazevObce != nazevCastiObce) {
+            city = '$nazevObce - $nazevCastiObce';
+          } else {
+            city = nazevObce.isNotEmpty ? nazevObce : nazevCastiObce;
+          }
+
+          final pscVal = sidlo['psc'];
+          if (pscVal != null) {
+            final String rawZip = pscVal.toString().replaceAll(RegExp(r'\s+'), '');
+            if (rawZip.length == 5) {
+              zip = '${rawZip.substring(0, 3)} ${rawZip.substring(3)}';
+            } else {
+              zip = rawZip;
+            }
+          }
+        }
+
+        setState(() {
+          if (companyName.isNotEmpty) {
+            _companyController.text = companyName;
+          }
+          if (actualIco.isNotEmpty) {
+            _icoController.text = actualIco;
+          }
+          
+          final List<String> addressParts = [];
+          if (street.isNotEmpty) {
+            if (houseNumber.isNotEmpty) {
+              addressParts.add('$street $houseNumber');
+            } else {
+              addressParts.add(street);
+            }
+          } else if (houseNumber.isNotEmpty) {
+            addressParts.add(houseNumber);
+          }
+          
+          final String cityAndZip = [zip, city].where((s) => s.isNotEmpty).join(' ');
+          if (cityAndZip.isNotEmpty) {
+            addressParts.add(cityAndZip);
+          }
+          
+          _addressController.text = addressParts.join(', ');
+        });
+
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                '✅ Načteno z ARES:\n'
+                'Firma: $companyName\n'
+                'IČO: $actualIco\n'
+                'Ulice: $street\n'
+                'Č. p.: $houseNumber\n'
+                'Město: $city\n'
+                'PSČ: $zip',
+              ),
+              backgroundColor: Colors.green,
+              duration: const Duration(seconds: 4),
+            ),
+          );
+        }
+      } else if (response.statusCode == 404) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('❌ Subjekt s tímto IČO nebyl v ARES nalezen.'), backgroundColor: Colors.red),
+          );
+        }
+      } else {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('❌ Chyba při načítání z ARES (kód ${response.statusCode}).'), backgroundColor: Colors.red),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('❌ Chyba připojení: $e'), backgroundColor: Colors.red),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoadingAres = false;
+        });
+      }
+    }
   }
 
   void _startInspection() {
@@ -786,11 +933,26 @@ class _NewReportScreenState extends State<NewReportScreen> {
                   flex: 2,
                   child: TextField(
                     controller: _icoController,
+                    keyboardType: TextInputType.number,
                     decoration: InputDecoration(
                       labelText: 'IČO',
                       hintText: '12345678',
                       border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
                       prefixIcon: const Icon(Icons.numbers, color: Color(0xFF0284C7)),
+                      suffixIcon: _isLoadingAres
+                          ? const SizedBox(
+                              width: 20,
+                              height: 20,
+                              child: Padding(
+                                padding: EdgeInsets.all(12.0),
+                                child: CircularProgressIndicator(strokeWidth: 2),
+                              ),
+                            )
+                          : IconButton(
+                              icon: const Icon(Icons.search, color: Color(0xFF0284C7)),
+                              tooltip: 'Načíst z ARES',
+                              onPressed: () => _fetchAresData(_icoController.text),
+                            ),
                     ),
                   ),
                 ),
@@ -1266,7 +1428,7 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
                               child: Container(
                                 padding: const EdgeInsets.all(4),
                                 decoration: BoxDecoration(
-                                  color: Colors.black.withOpacity(0.6),
+                                  color: Colors.black.withValues(alpha: 0.6),
                                   shape: BoxShape.circle,
                                 ),
                                 child: const Icon(Icons.edit, color: Colors.white, size: 20),

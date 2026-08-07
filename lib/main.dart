@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:typed_data';
+import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
@@ -51,6 +52,55 @@ Future<void> openGoogleMaps(String gpsCoords) async {
   if (!await launchUrl(url, mode: LaunchMode.externalApplication)) {
     debugPrint('Could not launch $url');
   }
+}
+
+String? extractGpsCoords(String locationName) {
+  final match = RegExp(r'GPS:\s*([^)]+)').firstMatch(locationName);
+  return match?.group(1)?.trim();
+}
+
+/// Vypálí do fotky časovou známku a (pokud je dostupná) GPS pozici jako
+/// poloprůhledný pruh dole na obrázku – slouží jako důkaz místa a času pořízení.
+Future<Uint8List> stampPhoto(Uint8List original, {required String timestamp, String? gpsText}) async {
+  final codec = await ui.instantiateImageCodec(original);
+  final frame = await codec.getNextFrame();
+  final image = frame.image;
+  final width = image.width.toDouble();
+  final height = image.height.toDouble();
+
+  final recorder = ui.PictureRecorder();
+  final canvas = Canvas(recorder, Rect.fromLTWH(0, 0, width, height));
+  canvas.drawImage(image, Offset.zero, Paint());
+
+  final barHeight = height * 0.09;
+  final barTop = height - barHeight;
+  canvas.drawRect(Rect.fromLTWH(0, barTop, width, barHeight), Paint()..color = const Color(0xB2000000));
+
+  final text = (gpsText != null && gpsText.isNotEmpty) ? '$timestamp   •   GPS: $gpsText' : timestamp;
+  final textPainter = TextPainter(
+    text: TextSpan(
+      text: text,
+      style: TextStyle(color: Colors.white, fontSize: barHeight * 0.34, fontWeight: FontWeight.bold),
+    ),
+    textDirection: TextDirection.ltr,
+    maxLines: 1,
+    ellipsis: '…',
+  );
+  textPainter.layout(maxWidth: width - 16);
+  textPainter.paint(canvas, Offset(8, barTop + (barHeight - textPainter.height) / 2));
+
+  final picture = recorder.endRecording();
+  final resultImage = await picture.toImage(image.width, image.height);
+  final byteData = await resultImage.toByteData(format: ui.ImageByteFormat.png);
+  return byteData!.buffer.asUint8List();
+}
+
+String formatTimestamp(DateTime dt) {
+  final d = dt.day.toString().padLeft(2, '0');
+  final m = dt.month.toString().padLeft(2, '0');
+  final h = dt.hour.toString().padLeft(2, '0');
+  final min = dt.minute.toString().padLeft(2, '0');
+  return '$d.$m.${dt.year} $h:$min';
 }
 
 Set<String> subLocationHistory = {'Sklad', 'Parkoviště', 'Rampa', 'Dílna', 'Kanceláře', 'Výrobní hala'};
@@ -721,6 +771,33 @@ class _LegislationManagerScreenState extends State<LegislationManagerScreen> {
     'Regulatorní školení', 'ISO'
   ];
 
+  Future<void> _exportLegislationJson() async {
+    if (globalLegislationDatabase.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('⚠️ Databáze legislativy je prázdná, není co exportovat.'), backgroundColor: Colors.red),
+      );
+      return;
+    }
+    final jsonStr = const JsonEncoder.withIndent('  ').convert(
+      globalLegislationDatabase.map((r) => r.toJson()).toList(),
+    );
+    final dataUri = Uri.parse('data:application/json;charset=utf-8,${Uri.encodeComponent(jsonStr)}');
+    final opened = await launchUrl(dataUri, mode: LaunchMode.externalApplication);
+    if (!opened && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('⚠️ Export se nepodařilo otevřít.'), backgroundColor: Colors.red),
+      );
+    } else if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('📄 JSON export otevřen v nové kartě – uložte ho přes Ctrl+S / Uložit jako.'),
+          backgroundColor: Colors.green,
+          duration: Duration(seconds: 4),
+        ),
+      );
+    }
+  }
+
   void _showAddRuleDialog([LegislationRule? existingRule]) {
     String selectedCat = existingRule?.category ?? 'BOZP';
     final lawController = TextEditingController(text: existingRule?.lawNumber ?? '');
@@ -833,6 +910,16 @@ class _LegislationManagerScreenState extends State<LegislationManagerScreen> {
                     setDialogState(() => errorMessage = '⚠️ Vyplňte popis čeho se týká.');
                     return;
                   }
+                  if (existingRule == null) {
+                    final normalizedParagraph = _normalizeForMatch(paraController.text.trim());
+                    final isDuplicate = globalLegislationDatabase.any(
+                      (r) => r.category == selectedCat && _normalizeForMatch(r.paragraph) == normalizedParagraph,
+                    );
+                    if (isDuplicate) {
+                      setDialogState(() => errorMessage = '⚠️ Norma se stejnou kategorií a paragrafem už v seznamu je – upravte prosím tu stávající.');
+                      return;
+                    }
+                  }
 
                   setState(() {
                     if (existingRule != null) {
@@ -870,6 +957,13 @@ class _LegislationManagerScreenState extends State<LegislationManagerScreen> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Seznam čerpané legislativy & norem'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.file_download),
+            tooltip: 'Exportovat do JSON (záloha / sdílení)',
+            onPressed: _exportLegislationJson,
+          ),
+        ],
       ),
       floatingActionButton: FloatingActionButton.extended(
         icon: const Icon(Icons.add),
@@ -1605,12 +1699,10 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
       );
       if (pickedFile != null) {
         final bytes = await pickedFile.readAsBytes();
-        setState(() {
-          _currentPhotoBytes = bytes;
-          _statusMessage = source == ImageSource.camera
-              ? '📷 Fotografie úspěšně načtena!'
-              : '📷 Fotografie načtena z galerie!';
-        });
+        await _applyPickedPhoto(
+          bytes,
+          source == ImageSource.camera ? '📷 Fotografie úspěšně načtena!' : '📷 Fotografie načtena z galerie!',
+        );
       }
       // pickedFile == null znamená, že uživatel focení/výběr zrušil – to není chyba.
     } catch (e) {
@@ -1620,10 +1712,7 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
           final XFile? galleryFile = await _picker.pickImage(source: ImageSource.gallery);
           if (galleryFile != null) {
             final bytes = await galleryFile.readAsBytes();
-            setState(() {
-              _currentPhotoBytes = bytes;
-              _statusMessage = '📷 Fotoaparát nedostupný, fotografie načtena z galerie.';
-            });
+            await _applyPickedPhoto(bytes, '📷 Fotoaparát nedostupný, fotografie načtena z galerie.');
           }
         } catch (err) {
           setState(() {
@@ -1636,6 +1725,21 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
         });
       }
     }
+  }
+
+  Future<void> _applyPickedPhoto(Uint8List rawBytes, String successMessage) async {
+    Uint8List finalBytes = rawBytes;
+    try {
+      final gps = extractGpsCoords(widget.locationName);
+      finalBytes = await stampPhoto(rawBytes, timestamp: formatTimestamp(DateTime.now()), gpsText: gps);
+    } catch (e) {
+      debugPrint('Nepodařilo se orazítkovat fotografii časem/GPS: $e');
+    }
+    if (!mounted) return;
+    setState(() {
+      _currentPhotoBytes = finalBytes;
+      _statusMessage = successMessage;
+    });
   }
 
   void _showImageSourceDialog() {
@@ -2142,6 +2246,121 @@ class ReportsHistoryScreen extends StatelessWidget {
   }
 }
 
+// -----------------------------------------------------------------------------
+// ELEKTRONICKÝ PODPIS
+// -----------------------------------------------------------------------------
+class _SignaturePainter extends CustomPainter {
+  final List<Offset?> points;
+  _SignaturePainter(this.points);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = Colors.black
+      ..strokeWidth = 2.5
+      ..strokeCap = StrokeCap.round;
+    for (int i = 0; i < points.length - 1; i++) {
+      final p1 = points[i];
+      final p2 = points[i + 1];
+      if (p1 != null && p2 != null) {
+        canvas.drawLine(p1, p2, paint);
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _SignaturePainter oldDelegate) => true;
+}
+
+class SignaturePad extends StatefulWidget {
+  const SignaturePad({Key? key}) : super(key: key);
+
+  @override
+  State<SignaturePad> createState() => _SignaturePadState();
+}
+
+class _SignaturePadState extends State<SignaturePad> {
+  static const Size _canvasSize = Size(300, 160);
+  final List<Offset?> _points = [];
+
+  Future<Uint8List> _render() async {
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder, Rect.fromLTWH(0, 0, _canvasSize.width, _canvasSize.height));
+    canvas.drawRect(Rect.fromLTWH(0, 0, _canvasSize.width, _canvasSize.height), Paint()..color = Colors.white);
+    final paint = Paint()
+      ..color = Colors.black
+      ..strokeWidth = 2.5
+      ..strokeCap = StrokeCap.round;
+    for (int i = 0; i < _points.length - 1; i++) {
+      final p1 = _points[i];
+      final p2 = _points[i + 1];
+      if (p1 != null && p2 != null) {
+        canvas.drawLine(p1, p2, paint);
+      }
+    }
+    final picture = recorder.endRecording();
+    final img = await picture.toImage(_canvasSize.width.toInt(), _canvasSize.height.toInt());
+    final byteData = await img.toByteData(format: ui.ImageByteFormat.png);
+    return byteData!.buffer.asUint8List();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      title: const Text('✍️ Podpis kontrolora'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Text('Podepište prstem nebo myší do rámečku:', style: TextStyle(fontSize: 12, color: Colors.grey)),
+          const SizedBox(height: 8),
+          Container(
+            width: _canvasSize.width,
+            height: _canvasSize.height,
+            decoration: BoxDecoration(
+              border: Border.all(color: Colors.grey.shade400),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(8),
+              child: GestureDetector(
+                onPanUpdate: (details) {
+                  setState(() {
+                    _points.add(details.localPosition);
+                  });
+                },
+                onPanEnd: (_) => setState(() => _points.add(null)),
+                child: CustomPaint(
+                  size: _canvasSize,
+                  painter: _SignaturePainter(_points),
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 6),
+          TextButton.icon(
+            onPressed: _points.isEmpty ? null : () => setState(() => _points.clear()),
+            icon: const Icon(Icons.refresh, size: 18),
+            label: const Text('Vymazat'),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Zrušit')),
+        ElevatedButton(
+          onPressed: _points.isEmpty
+              ? null
+              : () async {
+                  final bytes = await _render();
+                  if (context.mounted) Navigator.pop(context, bytes);
+                },
+          child: const Text('Uložit podpis'),
+        ),
+      ],
+    );
+  }
+}
+
 class RevisionTableScreen extends StatefulWidget {
   const RevisionTableScreen({Key? key}) : super(key: key);
 
@@ -2150,6 +2369,20 @@ class RevisionTableScreen extends StatefulWidget {
 }
 
 class _RevisionTableScreenState extends State<RevisionTableScreen> {
+  Uint8List? _signatureBytes;
+
+  Future<void> _captureSignature() async {
+    final result = await showDialog<Uint8List>(
+      context: context,
+      builder: (context) => const SignaturePad(),
+    );
+    if (result != null) {
+      setState(() {
+        _signatureBytes = result;
+      });
+    }
+  }
+
   void _editLegislation(Finding finding) {
     TextEditingController legController = TextEditingController(text: finding.legislation);
 
@@ -2402,6 +2635,17 @@ class _RevisionTableScreenState extends State<RevisionTableScreen> {
                 ),
               );
             }).toList(),
+            if (_signatureBytes != null) ...[
+              pw.SizedBox(height: 16),
+              pw.Text('Podpis kontrolora:', style: pw.TextStyle(fontSize: 10, fontWeight: pw.FontWeight.bold, color: _pdfSlate)),
+              pw.SizedBox(height: 4),
+              pw.Container(
+                height: 80,
+                width: 160,
+                decoration: pw.BoxDecoration(border: pw.Border.all(color: PdfColors.grey400)),
+                child: pw.Image(pw.MemoryImage(_signatureBytes!), fit: pw.BoxFit.contain),
+              ),
+            ],
           ];
         },
       ),
@@ -2557,6 +2801,18 @@ class _RevisionTableScreenState extends State<RevisionTableScreen> {
                         ),
                       );
                     },
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16.0),
+                  child: OutlinedButton.icon(
+                    icon: Icon(_signatureBytes != null ? Icons.check_circle : Icons.draw, color: _signatureBytes != null ? Colors.green : const Color(0xFF0284C7)),
+                    label: Text(
+                      _signatureBytes != null ? 'Podpis kontrolora přiložen' : 'Přidat podpis kontrolora (nepovinné)',
+                      style: TextStyle(fontWeight: FontWeight.bold, color: _signatureBytes != null ? Colors.green : const Color(0xFF0284C7)),
+                    ),
+                    style: OutlinedButton.styleFrom(minimumSize: const Size(double.infinity, 46)),
+                    onPressed: _captureSignature,
                   ),
                 ),
                 Padding(

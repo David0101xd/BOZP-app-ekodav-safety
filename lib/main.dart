@@ -7,8 +7,12 @@ import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:geolocator/geolocator.dart';
 
-void main() {
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await loadPersistedData();
   runApp(const EkodavSafetyApp());
 }
 
@@ -77,6 +81,101 @@ class LegislationRule {
     if (paragraph.isNotEmpty) res += ' ($paragraph)';
     return res;
   }
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'category': category,
+        'lawNumber': lawNumber,
+        'paragraph': paragraph,
+        'citation': citation,
+        'subjectDescription': subjectDescription,
+      };
+
+  factory LegislationRule.fromJson(Map<String, dynamic> json) => LegislationRule(
+        id: json['id'] as String,
+        category: json['category'] as String,
+        lawNumber: json['lawNumber'] as String? ?? '',
+        paragraph: json['paragraph'] as String,
+        citation: json['citation'] as String? ?? '',
+        subjectDescription: json['subjectDescription'] as String? ?? '',
+      );
+}
+
+// -----------------------------------------------------------------------------
+// AUTOMATICKÉ VYHODNOCENÍ NÁLEZU DLE LEGISLATIVY A PŘÍKLADŮ
+// -----------------------------------------------------------------------------
+
+String _normalizeForMatch(String input) {
+  const withDiacritics = 'áčďéěíňóřšťúůýžÁČĎÉĚÍŇÓŘŠŤÚŮÝŽ';
+  const withoutDiacritics = 'acdeeinorstuuyzACDEEINORSTUUYZ';
+  final buffer = StringBuffer();
+  for (final rune in input.toLowerCase().runes) {
+    final ch = String.fromCharCode(rune);
+    final idx = withDiacritics.indexOf(ch);
+    buffer.write(idx >= 0 ? withoutDiacritics[idx] : ch);
+  }
+  return buffer.toString();
+}
+
+class LegislationMatch {
+  final LegislationRule rule;
+  final bool isConfident;
+  LegislationMatch(this.rule, this.isConfident);
+}
+
+/// Vyhodnotí text nálezu proti příkladům ("subjectDescription") v databázi
+/// legislativy a vrátí nejlépe odpovídající normu. Pokud žádný příklad
+/// nesedí, spadne na první normu vybrané kategorie (dřívější chování) a
+/// označí výsledek jako nejistý, ať to inspektor na revizi zkontroluje.
+LegislationMatch? matchLegislation(String noteText, String category) {
+  if (globalLegislationDatabase.isEmpty) return null;
+
+  final normalizedNote = _normalizeForMatch(noteText);
+  LegislationRule? bestRule;
+  int bestScore = 0;
+
+  for (final rule in globalLegislationDatabase) {
+    final examples = rule.subjectDescription
+        .split(',')
+        .map((e) => e.trim())
+        .where((e) => e.isNotEmpty);
+
+    int score = 0;
+    for (final example in examples) {
+      final normalizedExample = _normalizeForMatch(example);
+      if (normalizedExample.isEmpty) continue;
+      if (normalizedNote.contains(normalizedExample) ||
+          normalizedExample.contains(normalizedNote)) {
+        score += 3;
+        continue;
+      }
+      final words = normalizedExample.split(RegExp(r'\s+')).where((w) => w.length > 3);
+      for (final word in words) {
+        if (normalizedNote.contains(word)) score += 1;
+      }
+    }
+    if (rule.category == category) score += 1;
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestRule = rule;
+    }
+  }
+
+  if (bestRule != null && bestScore >= 2) {
+    return LegislationMatch(bestRule, true);
+  }
+
+  final fallback = globalLegislationDatabase.firstWhere(
+    (r) => r.category == category,
+    orElse: () => LegislationRule(
+      id: '0',
+      category: category,
+      paragraph: '§ 101',
+      subjectDescription: '',
+    ),
+  );
+  return LegislationMatch(fallback, false);
 }
 
 List<LegislationRule> globalLegislationDatabase = [
@@ -249,6 +348,32 @@ class Finding {
     this.photoBytes,
     required this.timestamp,
   });
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'orderNumber': orderNumber,
+        'category': category,
+        'severity': severity,
+        'description': description,
+        'legislation': legislation,
+        'locationDetail': locationDetail,
+        'isPhotoTaken': isPhotoTaken,
+        'photoBytes': photoBytes != null ? base64Encode(photoBytes!) : null,
+        'timestamp': timestamp.toIso8601String(),
+      };
+
+  factory Finding.fromJson(Map<String, dynamic> json) => Finding(
+        id: json['id'] as String,
+        orderNumber: json['orderNumber'] as int,
+        category: json['category'] as String,
+        severity: json['severity'] as String,
+        description: json['description'] as String,
+        legislation: json['legislation'] as String? ?? '',
+        locationDetail: json['locationDetail'] as String? ?? '',
+        isPhotoTaken: json['isPhotoTaken'] as bool? ?? false,
+        photoBytes: json['photoBytes'] != null ? base64Decode(json['photoBytes'] as String) : null,
+        timestamp: DateTime.parse(json['timestamp'] as String),
+      );
 }
 
 class InspectionReport {
@@ -271,7 +396,43 @@ class InspectionReport {
     required this.findings,
     this.gpsCoords,
   });
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'companyName': companyName,
+        'companyIco': companyIco,
+        'companyAddress': companyAddress,
+        'locationName': locationName,
+        'date': date.toIso8601String(),
+        'findings': findings.map((f) => f.toJson()).toList(),
+        'gpsCoords': gpsCoords,
+      };
+
+  factory InspectionReport.fromJson(Map<String, dynamic> json) => InspectionReport(
+        id: json['id'] as String,
+        companyName: json['companyName'] as String? ?? '',
+        companyIco: json['companyIco'] as String? ?? '',
+        companyAddress: json['companyAddress'] as String? ?? '',
+        locationName: json['locationName'] as String,
+        date: DateTime.parse(json['date'] as String),
+        findings: (json['findings'] as List)
+            .map((f) => Finding.fromJson(f as Map<String, dynamic>))
+            .toList(),
+        gpsCoords: json['gpsCoords'] as String?,
+      );
 }
+
+/// Firma/lokace aktuálně rozpracované inspekce – slouží jako podklad pro
+/// titulní stranu generovaného reportu (RevisionTableScreen na ni nemá
+/// jinak přímý přístup, pracuje jen se seznamem `globalFindings`).
+class ActiveReportContext {
+  String companyName = '';
+  String companyIco = '';
+  String companyAddress = '';
+  String locationName = '';
+}
+
+ActiveReportContext currentReportContext = ActiveReportContext();
 
 List<Finding> globalFindings = [];
 List<InspectionReport> savedReports = [
@@ -297,6 +458,56 @@ List<InspectionReport> savedReports = [
     gpsCoords: '49.1951, 16.6078',
   ),
 ];
+
+// -----------------------------------------------------------------------------
+// PERZISTENCE (localStorage prohlížeče přes shared_preferences)
+// -----------------------------------------------------------------------------
+const String _kLegislationKey = 'ekodav_legislation_v1';
+const String _kReportsKey = 'ekodav_reports_v1';
+
+Future<void> loadPersistedData() async {
+  try {
+    final prefs = await SharedPreferences.getInstance();
+
+    final legislationJson = prefs.getString(_kLegislationKey);
+    if (legislationJson != null) {
+      final decoded = jsonDecode(legislationJson) as List;
+      globalLegislationDatabase = decoded
+          .map((e) => LegislationRule.fromJson(e as Map<String, dynamic>))
+          .toList();
+    }
+
+    final reportsJson = prefs.getString(_kReportsKey);
+    if (reportsJson != null) {
+      final decoded = jsonDecode(reportsJson) as List;
+      savedReports = decoded
+          .map((e) => InspectionReport.fromJson(e as Map<String, dynamic>))
+          .toList();
+    }
+  } catch (e) {
+    debugPrint('Nepodařilo se načíst uložená data: $e');
+  }
+}
+
+Future<void> persistLegislation() async {
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    final encoded = jsonEncode(globalLegislationDatabase.map((r) => r.toJson()).toList());
+    await prefs.setString(_kLegislationKey, encoded);
+  } catch (e) {
+    debugPrint('Nepodařilo se uložit legislativu: $e');
+  }
+}
+
+Future<void> persistReports() async {
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    final encoded = jsonEncode(savedReports.map((r) => r.toJson()).toList());
+    await prefs.setString(_kReportsKey, encoded);
+  } catch (e) {
+    debugPrint('Nepodařilo se uložit reporty: $e');
+  }
+}
 
 // -----------------------------------------------------------------------------
 // 1. DOMOVSKÁ OBRAZOVKA
@@ -591,6 +802,7 @@ class _LegislationManagerScreenState extends State<LegislationManagerScreen> {
                       );
                     }
                   });
+                  persistLegislation();
                   Navigator.pop(context);
                 },
               ),
@@ -687,6 +899,7 @@ class _LegislationManagerScreenState extends State<LegislationManagerScreen> {
                             setState(() {
                               globalLegislationDatabase.removeAt(index);
                             });
+                            persistLegislation();
                           },
                         ),
                       ],
@@ -719,6 +932,7 @@ class _NewReportScreenState extends State<NewReportScreen> {
   final TextEditingController _locationController = TextEditingController();
   String? _gpsCoords;
   bool _isLoadingAres = false;
+  bool _isLoadingGps = false;
 
   Set<String> get _recentLocationChips {
     final Set<String> chips = {};
@@ -732,13 +946,51 @@ class _NewReportScreenState extends State<NewReportScreen> {
     return chips;
   }
 
-  void _getGpsLocation() {
+  Future<void> _getGpsLocation() async {
     setState(() {
-      _gpsCoords = '50.0755, 14.4378';
+      _isLoadingGps = true;
+    });
+
+    try {
+      final serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) {
+        throw 'Zapněte prosím službu polohy (GPS) v prohlížeči/zařízení.';
+      }
+
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+        if (permission == LocationPermission.denied) {
+          throw 'Přístup k poloze byl zamítnut.';
+        }
+      }
+      if (permission == LocationPermission.deniedForever) {
+        throw 'Přístup k poloze je trvale zakázán – povolte ho v nastavení prohlížeče.';
+      }
+
+      final position = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(accuracy: LocationAccuracy.high),
+      );
+
+      if (!mounted) return;
+      setState(() {
+        _gpsCoords = '${position.latitude.toStringAsFixed(6)}, ${position.longitude.toStringAsFixed(6)}';
+      });
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('📍 GPS pozice byla úspěšně načtena!'), backgroundColor: Colors.green),
       );
-    });
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('⚠️ Nepodařilo se získat GPS: $e'), backgroundColor: Colors.red),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoadingGps = false;
+        });
+      }
+    }
   }
 
   Future<void> _fetchAresData(String ico) async {
@@ -980,9 +1232,18 @@ class _NewReportScreenState extends State<NewReportScreen> {
                   child: Text('Zadejte název lokace / pracoviště / provozovny:', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
                 ),
                 TextButton.icon(
-                  onPressed: _getGpsLocation,
-                  icon: Icon(Icons.my_location, size: 18, color: _gpsCoords != null ? Colors.green : Colors.red),
-                  label: Text(_gpsCoords != null ? 'GPS Načtena' : 'Získat GPS', style: TextStyle(color: _gpsCoords != null ? Colors.green : Colors.red, fontWeight: FontWeight.bold, fontSize: 12)),
+                  onPressed: _isLoadingGps ? null : _getGpsLocation,
+                  icon: _isLoadingGps
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : Icon(Icons.my_location, size: 18, color: _gpsCoords != null ? Colors.green : Colors.red),
+                  label: Text(
+                    _isLoadingGps ? 'Zjišťuji polohu...' : (_gpsCoords != null ? 'GPS Načtena' : 'Získat GPS'),
+                    style: TextStyle(color: _gpsCoords != null ? Colors.green : Colors.red, fontWeight: FontWeight.bold, fontSize: 12),
+                  ),
                 )
               ],
             ),
@@ -1169,6 +1430,16 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
 
   final List<String> _severities = ['Vysoká', 'Střední', 'Nízká', 'Doporučení'];
 
+  @override
+  void initState() {
+    super.initState();
+    currentReportContext = ActiveReportContext()
+      ..companyName = widget.companyName
+      ..companyIco = widget.companyIco
+      ..companyAddress = widget.companyAddress
+      ..locationName = widget.locationName;
+  }
+
   Future<void> _pickPhoto(ImageSource source) async {
     try {
       final XFile? pickedFile = await _picker.pickImage(
@@ -1181,22 +1452,32 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
         final bytes = await pickedFile.readAsBytes();
         setState(() {
           _currentPhotoBytes = bytes;
-          _statusMessage = '📷 Fotografie úspěšně načtena!';
+          _statusMessage = source == ImageSource.camera
+              ? '📷 Fotografie úspěšně načtena!'
+              : '📷 Fotografie načtena z galerie!';
         });
       }
+      // pickedFile == null znamená, že uživatel focení/výběr zrušil – to není chyba.
     } catch (e) {
-      try {
-        final XFile? galleryFile = await _picker.pickImage(source: ImageSource.gallery);
-        if (galleryFile != null) {
-          final bytes = await galleryFile.readAsBytes();
+      if (source == ImageSource.camera) {
+        // Fotoaparát selhal (chybí oprávnění / zařízení bez kamery) – nabídneme galerii jako záchranu.
+        try {
+          final XFile? galleryFile = await _picker.pickImage(source: ImageSource.gallery);
+          if (galleryFile != null) {
+            final bytes = await galleryFile.readAsBytes();
+            setState(() {
+              _currentPhotoBytes = bytes;
+              _statusMessage = '📷 Fotoaparát nedostupný, fotografie načtena z galerie.';
+            });
+          }
+        } catch (err) {
           setState(() {
-            _currentPhotoBytes = bytes;
-            _statusMessage = '📷 Fotografie načtena z galerie!';
+            _statusMessage = '⚠️ Povolte v prohlížeči přístup k fotoaparátu nebo galerii.';
           });
         }
-      } catch (err) {
+      } else {
         setState(() {
-          _statusMessage = '⚠️ Povolte v prohlížeči přístup k fotoaparátu.';
+          _statusMessage = '⚠️ Nepodařilo se načíst fotografii z galerie.';
         });
       }
     }
@@ -1256,30 +1537,30 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
         subLocationHistory.add(placeText);
       }
 
-      String matchedLegislation = '';
-      final foundRule = globalLegislationDatabase.firstWhere(
-        (r) => r.category == _selectedCategory,
-        orElse: () => LegislationRule(id: '0', category: _selectedCategory, paragraph: '§ 101', subjectDescription: ''),
-      );
-      matchedLegislation = foundRule.fullTitle;
+      final noteText = _noteController.text.isEmpty ? 'Nález bez poznámky' : _noteController.text;
+      final match = matchLegislation(noteText, _selectedCategory);
+      final matchedLegislation = match?.rule.fullTitle ?? '';
+      final matchLabel = match == null
+          ? ''
+          : (match.isConfident ? ' (🤖 auto-přiřazeno)' : ' (⚠️ zkontrolujte)');
 
       if (_editingIndex >= 0 && _editingIndex < globalFindings.length) {
         final existing = globalFindings[_editingIndex];
         existing.category = _selectedCategory;
         existing.severity = _selectedSeverity;
-        existing.description = _noteController.text.isEmpty ? 'Nález bez poznámky' : _noteController.text;
+        existing.description = noteText;
         existing.locationDetail = placeText;
         existing.photoBytes = _currentPhotoBytes;
         existing.isPhotoTaken = _currentPhotoBytes != null;
         existing.legislation = matchedLegislation;
-        _statusMessage = '⚡ Nález #${existing.orderNumber} aktualizován!';
+        _statusMessage = '⚡ Nález #${existing.orderNumber} aktualizován!$matchLabel';
       } else {
         final newFinding = Finding(
           id: DateTime.now().millisecondsSinceEpoch.toString(),
           orderNumber: globalFindings.length + 1,
           category: _selectedCategory,
           severity: _selectedSeverity,
-          description: _noteController.text.isEmpty ? 'Nález bez poznámky' : _noteController.text,
+          description: noteText,
           locationDetail: placeText,
           legislation: matchedLegislation,
           photoBytes: _currentPhotoBytes,
@@ -1288,7 +1569,7 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
         );
 
         globalFindings.add(newFinding);
-        _statusMessage = '⚡ Nález #${newFinding.orderNumber} uložen!';
+        _statusMessage = '⚡ Nález #${newFinding.orderNumber} uložen!$matchLabel';
       }
 
       _resetFormToNew();
@@ -1331,6 +1612,7 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
         findings: List.from(globalFindings),
       );
       savedReports.insert(0, report);
+      persistReports();
     }
     Navigator.pop(context);
   }
@@ -1745,38 +2027,181 @@ class _RevisionTableScreenState extends State<RevisionTableScreen> {
     );
   }
 
+  static const PdfColor _pdfNavy = PdfColor.fromInt(0xFF0F172A);
+  static const PdfColor _pdfGreen = PdfColor.fromInt(0xFF10B981);
+  static const PdfColor _pdfBlue = PdfColor.fromInt(0xFF0284C7);
+  static const PdfColor _pdfAmber = PdfColor.fromInt(0xFFF59E0B);
+  static const PdfColor _pdfSlate = PdfColor.fromInt(0xFF334155);
+
+  PdfColor _severityColor(String severity) {
+    switch (severity) {
+      case 'Vysoká':
+      case 'Vysoka':
+        return PdfColors.red700;
+      case 'Střední':
+      case 'Stredni':
+        return _pdfAmber;
+      case 'Nízká':
+      case 'Nizka':
+        return _pdfBlue;
+      default:
+        return _pdfGreen;
+    }
+  }
+
+  pw.Widget _severityBadge(String severity) {
+    final color = _severityColor(severity);
+    return pw.Container(
+      padding: const pw.EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: pw.BoxDecoration(color: color, borderRadius: const pw.BorderRadius.all(pw.Radius.circular(10))),
+      child: pw.Text(severity.toUpperCase(), style: pw.TextStyle(fontSize: 8, fontWeight: pw.FontWeight.bold, color: PdfColors.white)),
+    );
+  }
+
+  pw.Widget _statChip(String label, int count, PdfColor color) {
+    return pw.Container(
+      padding: const pw.EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      margin: const pw.EdgeInsets.only(right: 6, bottom: 6),
+      decoration: pw.BoxDecoration(
+        border: pw.Border.all(color: color, width: 1),
+        borderRadius: const pw.BorderRadius.all(pw.Radius.circular(8)),
+      ),
+      child: pw.Row(
+        mainAxisSize: pw.MainAxisSize.min,
+        children: [
+          pw.Text('$count', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 12, color: color)),
+          pw.SizedBox(width: 4),
+          pw.Text(label, style: pw.TextStyle(fontSize: 10, color: _pdfSlate)),
+        ],
+      ),
+    );
+  }
+
   Future<void> _generateAndDownloadPdf() async {
     final pdf = pw.Document();
+    final now = DateTime.now();
+    final dateStr = '${now.day.toString().padLeft(2, '0')}.${now.month.toString().padLeft(2, '0')}.${now.year}';
+
+    final bySeverity = <String, int>{};
+    final byCategory = <String, int>{};
+    for (final f in globalFindings) {
+      bySeverity[f.severity] = (bySeverity[f.severity] ?? 0) + 1;
+      byCategory[f.category] = (byCategory[f.category] ?? 0) + 1;
+    }
+
+    final ctx = currentReportContext;
 
     pdf.addPage(
       pw.MultiPage(
         pageFormat: PdfPageFormat.a4,
+        margin: const pw.EdgeInsets.fromLTRB(30, 26, 30, 26),
+        header: (context) {
+          if (context.pageNumber == 1) return pw.SizedBox();
+          return pw.Container(
+            padding: const pw.EdgeInsets.only(bottom: 6),
+            margin: const pw.EdgeInsets.only(bottom: 10),
+            decoration: const pw.BoxDecoration(
+              border: pw.Border(bottom: pw.BorderSide(color: PdfColors.grey300, width: 1)),
+            ),
+            child: pw.Row(
+              mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+              children: [
+                pw.Text('EKODAV SAFETY – Protokol BOZP a PO', style: pw.TextStyle(fontSize: 9, color: PdfColors.grey600)),
+                pw.Text(dateStr, style: const pw.TextStyle(fontSize: 9, color: PdfColors.grey600)),
+              ],
+            ),
+          );
+        },
+        footer: (context) => pw.Container(
+          alignment: pw.Alignment.centerRight,
+          margin: const pw.EdgeInsets.only(top: 8),
+          child: pw.Text(
+            'Strana ${context.pageNumber} / ${context.pagesCount}',
+            style: const pw.TextStyle(fontSize: 9, color: PdfColors.grey600),
+          ),
+        ),
         build: (pw.Context context) {
           return [
-            pw.Header(
-              level: 0,
-              child: pw.Row(
-                mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+            // --- TITULNÍ STRANA ---
+            pw.Container(
+              padding: const pw.EdgeInsets.all(20),
+              decoration: pw.BoxDecoration(
+                color: _pdfNavy,
+                borderRadius: const pw.BorderRadius.all(pw.Radius.circular(10)),
+              ),
+              child: pw.Column(
+                crossAxisAlignment: pw.CrossAxisAlignment.start,
                 children: [
-                  pw.Text(
-                    'EKODAV SAFETY - PROTOKOL BOZP A PO',
-                    style: pw.TextStyle(fontSize: 16, fontWeight: pw.FontWeight.bold, color: PdfColors.blue),
+                  pw.Row(
+                    children: [
+                      pw.Text('EKO', style: pw.TextStyle(fontSize: 26, fontWeight: pw.FontWeight.bold, color: PdfColors.white)),
+                      pw.Text('DAV', style: pw.TextStyle(fontSize: 26, fontWeight: pw.FontWeight.bold, color: _pdfGreen)),
+                      pw.SizedBox(width: 8),
+                      pw.Container(
+                        padding: const pw.EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                        decoration: pw.BoxDecoration(color: _pdfAmber, borderRadius: const pw.BorderRadius.all(pw.Radius.circular(4))),
+                        child: pw.Text('SAFETY', style: pw.TextStyle(fontSize: 16, fontWeight: pw.FontWeight.bold, color: _pdfNavy)),
+                      ),
+                    ],
                   ),
-                  pw.Text('${DateTime.now().day}.${DateTime.now().month}.${DateTime.now().year}'),
+                  pw.SizedBox(height: 4),
+                  pw.Text('BOZP  •  PO  •  ŽIVOTNÍ PROSTŘEDÍ', style: const pw.TextStyle(fontSize: 10, color: PdfColors.grey400, letterSpacing: 1.2)),
                 ],
               ),
             ),
-            pw.SizedBox(height: 10),
-            pw.Text('Celkovy pocet nalezu: ${globalFindings.length}', style: const pw.TextStyle(fontSize: 12)),
-            pw.Divider(),
+            pw.SizedBox(height: 18),
+            pw.Text('PROTOKOL O PROVEDENÉ INSPEKCI', style: pw.TextStyle(fontSize: 20, fontWeight: pw.FontWeight.bold, color: _pdfNavy)),
+            pw.SizedBox(height: 4),
+            pw.Text('Vystaveno: $dateStr', style: const pw.TextStyle(fontSize: 11, color: PdfColors.grey700)),
+            pw.SizedBox(height: 16),
+
+            // --- INFO O SUBJEKTU ---
+            pw.Container(
+              width: double.infinity,
+              padding: const pw.EdgeInsets.all(14),
+              decoration: pw.BoxDecoration(
+                color: PdfColors.grey100,
+                borderRadius: const pw.BorderRadius.all(pw.Radius.circular(8)),
+              ),
+              child: pw.Column(
+                crossAxisAlignment: pw.CrossAxisAlignment.start,
+                children: [
+                  if (ctx.companyName.isNotEmpty) _infoRow('Kontrolovaný subjekt', ctx.companyName),
+                  if (ctx.companyIco.isNotEmpty) _infoRow('IČO', ctx.companyIco),
+                  if (ctx.companyAddress.isNotEmpty) _infoRow('Sídlo', ctx.companyAddress),
+                  if (ctx.locationName.isNotEmpty) _infoRow('Místo inspekce', ctx.locationName),
+                  _infoRow('Celkový počet nálezů', '${globalFindings.length}'),
+                ],
+              ),
+            ),
+            pw.SizedBox(height: 18),
+
+            // --- SOUHRN ---
+            pw.Text('SOUHRN NÁLEZŮ', style: pw.TextStyle(fontSize: 13, fontWeight: pw.FontWeight.bold, color: _pdfNavy)),
+            pw.SizedBox(height: 8),
+            pw.Wrap(
+              children: [
+                for (final entry in bySeverity.entries) _statChip(entry.key, entry.value, _severityColor(entry.key)),
+              ],
+            ),
+            pw.Wrap(
+              children: [
+                for (final entry in byCategory.entries) _statChip(entry.key, entry.value, _pdfBlue),
+              ],
+            ),
+
+            pw.NewPage(),
+
+            // --- JEDNOTLIVÉ NÁLEZY ---
+            pw.Text('DETAIL NÁLEZŮ', style: pw.TextStyle(fontSize: 14, fontWeight: pw.FontWeight.bold, color: _pdfNavy)),
             pw.SizedBox(height: 10),
             ...globalFindings.map((f) {
               return pw.Container(
-                margin: const pw.EdgeInsets.only(bottom: 12),
-                padding: const pw.EdgeInsets.all(10),
+                margin: const pw.EdgeInsets.only(bottom: 14),
+                padding: const pw.EdgeInsets.all(12),
                 decoration: pw.BoxDecoration(
-                  border: pw.Border.all(color: PdfColors.grey400),
-                  borderRadius: const pw.BorderRadius.all(pw.Radius.circular(6)),
+                  border: pw.Border.all(color: PdfColors.grey300),
+                  borderRadius: const pw.BorderRadius.all(pw.Radius.circular(8)),
                 ),
                 child: pw.Column(
                   crossAxisAlignment: pw.CrossAxisAlignment.start,
@@ -1784,23 +2209,32 @@ class _RevisionTableScreenState extends State<RevisionTableScreen> {
                     pw.Row(
                       mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
                       children: [
-                        pw.Text('Nalez #${f.orderNumber} - ${f.category}', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 13)),
-                        pw.Text('Zavaznost: ${f.severity}', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, color: f.severity == 'Vysoká' || f.severity == 'Vysoka' ? PdfColors.red : PdfColors.orange)),
+                        pw.Text('Nález #${f.orderNumber} – ${f.category}', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 13, color: _pdfNavy)),
+                        _severityBadge(f.severity),
                       ],
                     ),
-                    pw.SizedBox(height: 4),
+                    pw.SizedBox(height: 6),
                     if (f.locationDetail.isNotEmpty) ...[
-                      pw.Text('Misto nalezu: ${f.locationDetail}', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, color: PdfColors.grey800)),
-                      pw.SizedBox(height: 2),
+                      pw.Text('Místo nálezu: ${f.locationDetail}', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 10, color: PdfColors.grey800)),
+                      pw.SizedBox(height: 3),
                     ],
-                    pw.Text('Popis: ${f.description}'),
-                    pw.SizedBox(height: 4),
-                    pw.Text('Zakon / Norma: ${f.legislation}', style: pw.TextStyle(color: PdfColors.blue, fontWeight: pw.FontWeight.bold)),
+                    pw.Text('Popis: ${f.description}', style: const pw.TextStyle(fontSize: 11)),
+                    pw.SizedBox(height: 5),
+                    pw.Container(
+                      padding: const pw.EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+                      decoration: pw.BoxDecoration(color: PdfColors.blue50, borderRadius: const pw.BorderRadius.all(pw.Radius.circular(6))),
+                      child: pw.Text('Zákon / Norma: ${f.legislation}', style: pw.TextStyle(color: _pdfBlue, fontWeight: pw.FontWeight.bold, fontSize: 10)),
+                    ),
                     if (f.photoBytes != null) ...[
                       pw.SizedBox(height: 8),
-                      pw.Container(
-                        height: 120,
-                        child: pw.Image(pw.MemoryImage(f.photoBytes!), fit: pw.BoxFit.contain),
+                      pw.ClipRRect(
+                        horizontalRadius: 6,
+                        verticalRadius: 6,
+                        child: pw.Container(
+                          height: 160,
+                          width: double.infinity,
+                          child: pw.Image(pw.MemoryImage(f.photoBytes!), fit: pw.BoxFit.cover),
+                        ),
                       ),
                     ],
                   ],
@@ -1815,7 +2249,25 @@ class _RevisionTableScreenState extends State<RevisionTableScreen> {
     final pdfBytes = await pdf.save();
     await Printing.sharePdf(
       bytes: pdfBytes,
-      filename: 'Protokol_BOZP_${DateTime.now().day}_${DateTime.now().month}_${DateTime.now().year}.pdf',
+      filename: 'Protokol_BOZP_${now.day}_${now.month}_${now.year}.pdf',
+    );
+  }
+
+  pw.Widget _infoRow(String label, String value) {
+    return pw.Padding(
+      padding: const pw.EdgeInsets.only(bottom: 4),
+      child: pw.Row(
+        crossAxisAlignment: pw.CrossAxisAlignment.start,
+        children: [
+          pw.SizedBox(
+            width: 150,
+            child: pw.Text(label, style: pw.TextStyle(fontSize: 10, color: PdfColors.grey700, fontWeight: pw.FontWeight.bold)),
+          ),
+          pw.Expanded(
+            child: pw.Text(value, style: const pw.TextStyle(fontSize: 10)),
+          ),
+        ],
+      ),
     );
   }
 

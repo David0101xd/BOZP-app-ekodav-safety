@@ -1,6 +1,8 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
+import 'dart:html' as html;
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
@@ -14,6 +16,7 @@ import 'package:geolocator/geolocator.dart';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await loadPersistedData();
+  handleOAuthRedirectIfPresent();
   runApp(const EkodavSafetyApp());
 }
 
@@ -586,6 +589,7 @@ Future<void> persistLegislation() async {
     final prefs = await SharedPreferences.getInstance();
     final encoded = jsonEncode(globalLegislationDatabase.map((r) => r.toJson()).toList());
     await prefs.setString(_kLegislationKey, encoded);
+    lastLocalChangeAt = DateTime.now();
   } catch (e) {
     debugPrint('Nepodařilo se uložit legislativu: $e');
   }
@@ -596,6 +600,7 @@ Future<void> persistReports() async {
     final prefs = await SharedPreferences.getInstance();
     final encoded = jsonEncode(savedReports.map((r) => r.toJson()).toList());
     await prefs.setString(_kReportsKey, encoded);
+    lastLocalChangeAt = DateTime.now();
   } catch (e) {
     debugPrint('Nepodařilo se uložit reporty: $e');
   }
@@ -606,8 +611,411 @@ Future<void> persistCompanies() async {
     final prefs = await SharedPreferences.getInstance();
     final encoded = jsonEncode(savedCompanies.map((c) => c.toJson()).toList());
     await prefs.setString(_kCompaniesKey, encoded);
+    lastLocalChangeAt = DateTime.now();
   } catch (e) {
     debugPrint('Nepodařilo se uložit seznam firem: $e');
+  }
+}
+
+// -----------------------------------------------------------------------------
+// CLOUD ZÁLOHOVÁNÍ (Google Disk / OneDrive) – bez vlastního backendu
+// -----------------------------------------------------------------------------
+// Appka se přihlašuje přímo za uživatele k jeho Google/Microsoft účtu (OAuth
+// "implicit flow" v prohlížeči) a ukládá jeden JSON soubor do jeho privátní
+// appky-only složky (Google "appDataFolder" / OneDrive "approot"). Žádný
+// vlastní server, žádné sdílené úložiště se sdílenými hesly.
+//
+// DŮLEŽITÉ: níže je potřeba doplnit skutečná Client ID z Google Cloud
+// Console / Azure Portal (viz návod). Bez nich přihlášení nebude fungovat.
+const String kGoogleClientId = 'TODO_DOPLNIT_GOOGLE_CLIENT_ID.apps.googleusercontent.com';
+const String kMicrosoftClientId = 'TODO_DOPLNIT_MICROSOFT_CLIENT_ID';
+const String _cloudBackupFileName = 'ekodav_backup.json';
+
+DateTime lastLocalChangeAt = DateTime.now();
+
+enum CloudProvider { google, microsoft }
+
+class CloudAuthState {
+  String? googleToken;
+  DateTime? googleExpiry;
+  String? microsoftToken;
+  DateTime? microsoftExpiry;
+  bool autoSyncEnabled = false;
+  DateTime? lastSyncedAt;
+
+  bool get isGoogleConnected => googleToken != null && googleExpiry != null && DateTime.now().isBefore(googleExpiry!);
+  bool get isMicrosoftConnected => microsoftToken != null && microsoftExpiry != null && DateTime.now().isBefore(microsoftExpiry!);
+  bool get isAnyConnected => isGoogleConnected || isMicrosoftConnected;
+
+  void disconnect(CloudProvider provider) {
+    if (provider == CloudProvider.google) {
+      googleToken = null;
+      googleExpiry = null;
+    } else {
+      microsoftToken = null;
+      microsoftExpiry = null;
+    }
+  }
+}
+
+CloudAuthState cloudAuthState = CloudAuthState();
+
+String get _oauthRedirectUri {
+  final base = Uri.base;
+  return Uri(scheme: base.scheme, host: base.host, port: base.hasPort ? base.port : null, path: base.path).toString();
+}
+
+/// Přesměruje prohlížeč na přihlašovací stránku Google / Microsoft.
+/// Appka je jen statická stránka bez backendu, takže se používá OAuth
+/// "implicit flow" – token se vrátí rovnou v URL fragmentu, žádná výměna
+/// autorizačního kódu na serveru není potřeba.
+void startCloudSignIn(CloudProvider provider) {
+  final redirectUri = _oauthRedirectUri;
+  final Uri authUrl;
+  if (provider == CloudProvider.google) {
+    authUrl = Uri.https('accounts.google.com', '/o/oauth2/v2/auth', {
+      'client_id': kGoogleClientId,
+      'redirect_uri': redirectUri,
+      'response_type': 'token',
+      'scope': 'https://www.googleapis.com/auth/drive.appdata',
+      'state': 'google',
+      'prompt': 'select_account',
+    });
+  } else {
+    authUrl = Uri.https('login.microsoftonline.com', '/common/oauth2/v2.0/authorize', {
+      'client_id': kMicrosoftClientId,
+      'redirect_uri': redirectUri,
+      'response_type': 'token',
+      'response_mode': 'fragment',
+      'scope': 'Files.ReadWrite.AppFolder',
+      'state': 'microsoft',
+    });
+  }
+  html.window.location.href = authUrl.toString();
+}
+
+/// Zavolat jednou při startu appky – zpracuje návrat z OAuth přihlášení
+/// (token přijde v URL fragmentu za '#').
+void handleOAuthRedirectIfPresent() {
+  final fragment = Uri.base.fragment;
+  if (fragment.isEmpty || !fragment.contains('access_token')) return;
+
+  final params = Uri.splitQueryString(fragment);
+  final token = params['access_token'];
+  final state = params['state'];
+  final expiresInSec = int.tryParse(params['expires_in'] ?? '') ?? 3600;
+  if (token == null) return;
+
+  final expiry = DateTime.now().add(Duration(seconds: expiresInSec));
+  if (state == 'google') {
+    cloudAuthState.googleToken = token;
+    cloudAuthState.googleExpiry = expiry;
+  } else if (state == 'microsoft') {
+    cloudAuthState.microsoftToken = token;
+    cloudAuthState.microsoftExpiry = expiry;
+  }
+
+  // Smaž token z viditelné URL, ať nezůstává v historii prohlížeče.
+  html.window.history.replaceState(null, '', Uri.base.replace(fragment: '').toString());
+}
+
+Map<String, dynamic> _buildCloudSnapshot() => {
+      'updatedAt': lastLocalChangeAt.toIso8601String(),
+      'legislation': globalLegislationDatabase.map((r) => r.toJson()).toList(),
+      'reports': savedReports.map((r) => r.toJson()).toList(),
+      'companies': savedCompanies.map((c) => c.toJson()).toList(),
+    };
+
+void _applyCloudSnapshot(Map<String, dynamic> snapshot) {
+  final legislation = snapshot['legislation'] as List?;
+  if (legislation != null) {
+    globalLegislationDatabase = legislation.map((e) => LegislationRule.fromJson(e as Map<String, dynamic>)).toList();
+  }
+  final reports = snapshot['reports'] as List?;
+  if (reports != null) {
+    savedReports = reports.map((e) => InspectionReport.fromJson(e as Map<String, dynamic>)).toList();
+  }
+  final companies = snapshot['companies'] as List?;
+  if (companies != null) {
+    savedCompanies = companies.map((e) => SavedCompany.fromJson(e as Map<String, dynamic>)).toList();
+  }
+  persistLegislation();
+  persistReports();
+  persistCompanies();
+}
+
+Future<String?> _findGoogleDriveFileId(String token) async {
+  final uri = Uri.https('www.googleapis.com', '/drive/v3/files', {
+    'spaces': 'appDataFolder',
+    'q': "name='$_cloudBackupFileName'",
+    'fields': 'files(id)',
+  });
+  final resp = await http.get(uri, headers: {'Authorization': 'Bearer $token'});
+  if (resp.statusCode != 200) return null;
+  final files = (jsonDecode(resp.body) as Map<String, dynamic>)['files'] as List?;
+  if (files == null || files.isEmpty) return null;
+  return (files.first as Map<String, dynamic>)['id'] as String?;
+}
+
+Future<void> _uploadToGoogleDrive(String token, String jsonBody) async {
+  final headers = {'Authorization': 'Bearer $token'};
+  final existingId = await _findGoogleDriveFileId(token);
+  String fileId;
+  if (existingId != null) {
+    fileId = existingId;
+  } else {
+    final createResp = await http.post(
+      Uri.https('www.googleapis.com', '/drive/v3/files'),
+      headers: {...headers, 'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'name': _cloudBackupFileName,
+        'parents': ['appDataFolder'],
+      }),
+    );
+    if (createResp.statusCode >= 300) {
+      throw 'vytvoření souboru selhalo (${createResp.statusCode})';
+    }
+    fileId = (jsonDecode(createResp.body) as Map<String, dynamic>)['id'] as String;
+  }
+
+  final uploadResp = await http.patch(
+    Uri.https('www.googleapis.com', '/upload/drive/v3/files/$fileId', {'uploadType': 'media'}),
+    headers: {...headers, 'Content-Type': 'application/json'},
+    body: jsonBody,
+  );
+  if (uploadResp.statusCode >= 300) {
+    throw 'nahrání selhalo (${uploadResp.statusCode})';
+  }
+}
+
+Future<String?> _downloadFromGoogleDrive(String token) async {
+  final fileId = await _findGoogleDriveFileId(token);
+  if (fileId == null) return null;
+  final resp = await http.get(
+    Uri.https('www.googleapis.com', '/drive/v3/files/$fileId', {'alt': 'media'}),
+    headers: {'Authorization': 'Bearer $token'},
+  );
+  if (resp.statusCode != 200) return null;
+  return utf8.decode(resp.bodyBytes);
+}
+
+Future<void> _uploadToOneDrive(String token, String jsonBody) async {
+  final resp = await http.put(
+    Uri.parse('https://graph.microsoft.com/v1.0/me/drive/special/approot:/$_cloudBackupFileName:/content'),
+    headers: {'Authorization': 'Bearer $token', 'Content-Type': 'application/json'},
+    body: jsonBody,
+  );
+  if (resp.statusCode >= 300) {
+    throw 'nahrání selhalo (${resp.statusCode})';
+  }
+}
+
+Future<String?> _downloadFromOneDrive(String token) async {
+  final resp = await http.get(
+    Uri.parse('https://graph.microsoft.com/v1.0/me/drive/special/approot:/$_cloudBackupFileName:/content'),
+    headers: {'Authorization': 'Bearer $token'},
+  );
+  if (resp.statusCode != 200) return null;
+  return utf8.decode(resp.bodyBytes);
+}
+
+/// Stáhne nejnovější zálohu (pokud existuje a je novější než místní data),
+/// jinak nahraje místní data do všech připojených cloudů. Vrací hlášku pro uživatele.
+Future<String> syncNow() async {
+  if (!cloudAuthState.isAnyConnected) {
+    return 'Nejste připojeni k žádnému cloudu.';
+  }
+
+  String? remoteJson;
+  final messages = <String>[];
+
+  if (remoteJson == null && cloudAuthState.isGoogleConnected) {
+    try {
+      remoteJson = await _downloadFromGoogleDrive(cloudAuthState.googleToken!);
+    } catch (e) {
+      messages.add('Google Disk – chyba stažení: $e');
+    }
+  }
+  if (remoteJson == null && cloudAuthState.isMicrosoftConnected) {
+    try {
+      remoteJson = await _downloadFromOneDrive(cloudAuthState.microsoftToken!);
+    } catch (e) {
+      messages.add('OneDrive – chyba stažení: $e');
+    }
+  }
+
+  var finalSnapshot = _buildCloudSnapshot();
+
+  if (remoteJson != null) {
+    final remoteSnapshot = jsonDecode(remoteJson) as Map<String, dynamic>;
+    final remoteUpdatedAt = DateTime.tryParse(remoteSnapshot['updatedAt'] as String? ?? '');
+    if (remoteUpdatedAt != null && remoteUpdatedAt.isAfter(lastLocalChangeAt)) {
+      _applyCloudSnapshot(remoteSnapshot);
+      finalSnapshot = remoteSnapshot;
+      messages.add('Načtena novější verze z cloudu.');
+    } else {
+      messages.add('Místní data jsou aktuální, nahrávám do cloudu.');
+    }
+  }
+
+  final bodyToUpload = jsonEncode(finalSnapshot);
+  if (cloudAuthState.isGoogleConnected) {
+    try {
+      await _uploadToGoogleDrive(cloudAuthState.googleToken!, bodyToUpload);
+    } catch (e) {
+      messages.add('Google Disk – chyba nahrání: $e');
+    }
+  }
+  if (cloudAuthState.isMicrosoftConnected) {
+    try {
+      await _uploadToOneDrive(cloudAuthState.microsoftToken!, bodyToUpload);
+    } catch (e) {
+      messages.add('OneDrive – chyba nahrání: $e');
+    }
+  }
+
+  cloudAuthState.lastSyncedAt = DateTime.now();
+  return messages.isEmpty ? 'Synchronizace dokončena.' : messages.join('\n');
+}
+
+class CloudSyncScreen extends StatefulWidget {
+  const CloudSyncScreen({Key? key}) : super(key: key);
+
+  @override
+  State<CloudSyncScreen> createState() => _CloudSyncScreenState();
+}
+
+class _CloudSyncScreenState extends State<CloudSyncScreen> {
+  bool _isSyncing = false;
+
+  Future<void> _runSync() async {
+    setState(() => _isSyncing = true);
+    final message = await syncNow();
+    if (!mounted) return;
+    setState(() => _isSyncing = false);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), duration: const Duration(seconds: 4)),
+    );
+  }
+
+  Future<void> _confirmAndRestore() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Obnovit z cloudu?'),
+        content: const Text('Tohle přepíše místní data na tomto zařízení nejnovější zálohou z cloudu (podle času poslední změny). Pokračovat?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Zrušit')),
+          ElevatedButton(onPressed: () => Navigator.pop(context, true), child: const Text('Obnovit')),
+        ],
+      ),
+    );
+    if (confirmed == true) {
+      await _runSync();
+    }
+  }
+
+  Widget _providerTile({
+    required String name,
+    required IconData icon,
+    required Color color,
+    required bool connected,
+    required VoidCallback onConnect,
+    required VoidCallback onDisconnect,
+  }) {
+    return Card(
+      margin: const EdgeInsets.only(bottom: 10),
+      child: ListTile(
+        leading: Icon(icon, color: color, size: 32),
+        title: Text(name, style: const TextStyle(fontWeight: FontWeight.bold)),
+        subtitle: Text(connected ? '✅ Připojeno' : 'Nepřipojeno'),
+        trailing: connected
+            ? TextButton(onPressed: onDisconnect, child: const Text('Odpojit'))
+            : ElevatedButton(onPressed: onConnect, child: const Text('Připojit')),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Cloud zálohování')),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.blue[50],
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: Colors.blue[200]!),
+              ),
+              child: const Text(
+                'Legislativa, reporty a seznam firem se zálohují do tvého vlastního Google Disku / OneDrive '
+                '(do skryté složky patřící jen téhle appce). Přihlášení vydrží cca 1 hodinu, pak bude potřeba se znovu připojit.',
+                style: TextStyle(fontSize: 12, color: Colors.blueGrey),
+              ),
+            ),
+            const SizedBox(height: 16),
+            _providerTile(
+              name: 'Google Disk',
+              icon: Icons.cloud,
+              color: Colors.green,
+              connected: cloudAuthState.isGoogleConnected,
+              onConnect: () => startCloudSignIn(CloudProvider.google),
+              onDisconnect: () => setState(() => cloudAuthState.disconnect(CloudProvider.google)),
+            ),
+            _providerTile(
+              name: 'OneDrive',
+              icon: Icons.cloud_queue,
+              color: Colors.blue,
+              connected: cloudAuthState.isMicrosoftConnected,
+              onConnect: () => startCloudSignIn(CloudProvider.microsoft),
+              onDisconnect: () => setState(() => cloudAuthState.disconnect(CloudProvider.microsoft)),
+            ),
+            const SizedBox(height: 10),
+            SwitchListTile(
+              title: const Text('Automatická synchronizace', style: TextStyle(fontWeight: FontWeight.bold)),
+              subtitle: const Text('Appka bude na pozadí (dokud je otevřená v prohlížeči) pravidelně ukládat a stahovat změny.'),
+              value: cloudAuthState.autoSyncEnabled,
+              onChanged: cloudAuthState.isAnyConnected
+                  ? (val) => setState(() => cloudAuthState.autoSyncEnabled = val)
+                  : null,
+            ),
+            const SizedBox(height: 10),
+            if (cloudAuthState.lastSyncedAt != null)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 10),
+                child: Text(
+                  'Poslední synchronizace: ${formatTimestamp(cloudAuthState.lastSyncedAt!)}',
+                  style: const TextStyle(fontSize: 12, color: Colors.grey),
+                  textAlign: TextAlign.center,
+                ),
+              ),
+            ElevatedButton.icon(
+              icon: _isSyncing
+                  ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                  : const Icon(Icons.cloud_upload),
+              label: Text(_isSyncing ? 'Synchronizuji...' : 'Zálohovat / synchronizovat teď'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF0284C7),
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(vertical: 14),
+              ),
+              onPressed: (_isSyncing || !cloudAuthState.isAnyConnected) ? null : _runSync,
+            ),
+            const SizedBox(height: 8),
+            OutlinedButton.icon(
+              icon: const Icon(Icons.cloud_download),
+              label: const Text('Obnovit z cloudu (přepíše místní data)'),
+              onPressed: (_isSyncing || !cloudAuthState.isAnyConnected) ? null : _confirmAndRestore,
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }
 
@@ -622,6 +1030,25 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
+  Timer? _autoSyncTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    _autoSyncTimer = Timer.periodic(const Duration(minutes: 5), (_) async {
+      if (cloudAuthState.autoSyncEnabled && cloudAuthState.isAnyConnected) {
+        await syncNow();
+        if (mounted) setState(() {});
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _autoSyncTimer?.cancel();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -723,6 +1150,28 @@ class _HomeScreenState extends State<HomeScreen> {
                           await Navigator.push(
                             context,
                             MaterialPageRoute(builder: (context) => const LegislationManagerScreen()),
+                          );
+                          setState(() {});
+                        },
+                      ),
+                      const SizedBox(height: 10),
+
+                      OutlinedButton.icon(
+                        icon: Icon(Icons.cloud, size: 22, color: cloudAuthState.isAnyConnected ? Colors.green : const Color(0xFF0284C7)),
+                        label: Text(
+                          cloudAuthState.isAnyConnected ? 'CLOUD ZÁLOHOVÁNÍ (připojeno)' : 'CLOUD ZÁLOHOVÁNÍ',
+                          style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
+                        ),
+                        style: OutlinedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                          foregroundColor: const Color(0xFF0284C7),
+                          side: const BorderSide(color: Color(0xFF0284C7), width: 1.5),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        ),
+                        onPressed: () async {
+                          await Navigator.push(
+                            context,
+                            MaterialPageRoute(builder: (context) => const CloudSyncScreen()),
                           );
                           setState(() {});
                         },

@@ -460,10 +460,44 @@ List<InspectionReport> savedReports = [
 ];
 
 // -----------------------------------------------------------------------------
+// VLASTNÍ SEZNAM FIREM
+// -----------------------------------------------------------------------------
+class SavedCompany {
+  final String id;
+  String name;
+  String ico;
+  String address;
+
+  SavedCompany({
+    required this.id,
+    required this.name,
+    this.ico = '',
+    this.address = '',
+  });
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'name': name,
+        'ico': ico,
+        'address': address,
+      };
+
+  factory SavedCompany.fromJson(Map<String, dynamic> json) => SavedCompany(
+        id: json['id'] as String,
+        name: json['name'] as String,
+        ico: json['ico'] as String? ?? '',
+        address: json['address'] as String? ?? '',
+      );
+}
+
+List<SavedCompany> savedCompanies = [];
+
+// -----------------------------------------------------------------------------
 // PERZISTENCE (localStorage prohlížeče přes shared_preferences)
 // -----------------------------------------------------------------------------
 const String _kLegislationKey = 'ekodav_legislation_v1';
 const String _kReportsKey = 'ekodav_reports_v1';
+const String _kCompaniesKey = 'ekodav_companies_v1';
 
 Future<void> loadPersistedData() async {
   try {
@@ -482,6 +516,14 @@ Future<void> loadPersistedData() async {
       final decoded = jsonDecode(reportsJson) as List;
       savedReports = decoded
           .map((e) => InspectionReport.fromJson(e as Map<String, dynamic>))
+          .toList();
+    }
+
+    final companiesJson = prefs.getString(_kCompaniesKey);
+    if (companiesJson != null) {
+      final decoded = jsonDecode(companiesJson) as List;
+      savedCompanies = decoded
+          .map((e) => SavedCompany.fromJson(e as Map<String, dynamic>))
           .toList();
     }
   } catch (e) {
@@ -506,6 +548,16 @@ Future<void> persistReports() async {
     await prefs.setString(_kReportsKey, encoded);
   } catch (e) {
     debugPrint('Nepodařilo se uložit reporty: $e');
+  }
+}
+
+Future<void> persistCompanies() async {
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    final encoded = jsonEncode(savedCompanies.map((c) => c.toJson()).toList());
+    await prefs.setString(_kCompaniesKey, encoded);
+  } catch (e) {
+    debugPrint('Nepodařilo se uložit seznam firem: $e');
   }
 }
 
@@ -1007,7 +1059,7 @@ class _NewReportScreenState extends State<NewReportScreen> {
     });
 
     try {
-      final url = Uri.parse('https://ares.gov.cz/ares/nesstar/v1/ekonomicke-subjekty/$cleanIco');
+      final url = Uri.parse('https://ares.gov.cz/ekonomicke-subjekty-v-be/rest/ekonomicke-subjekty/$cleanIco');
       final response = await http.get(url, headers: {
         'Accept': 'application/json',
       });
@@ -1125,7 +1177,11 @@ class _NewReportScreenState extends State<NewReportScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('❌ Chyba připojení: $e'), backgroundColor: Colors.red),
+          SnackBar(
+            content: Text('❌ Chyba připojení k ARES: $e\n(Pokud se opakuje, může jít o CORS omezení – vyplňte firmu ručně.)'),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 5),
+          ),
         );
       }
     } finally {
@@ -1135,6 +1191,56 @@ class _NewReportScreenState extends State<NewReportScreen> {
         });
       }
     }
+  }
+
+  void _saveCurrentCompanyToList() {
+    final name = _companyController.text.trim();
+    if (name.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('⚠️ Vyplňte nejdřív název firmy.'), backgroundColor: Colors.red),
+      );
+      return;
+    }
+    final ico = _icoController.text.trim();
+    final address = _addressController.text.trim();
+
+    setState(() {
+      final existingIndex = savedCompanies.indexWhere(
+        (c) => (ico.isNotEmpty && c.ico == ico) || (ico.isEmpty && c.name == name),
+      );
+      if (existingIndex >= 0) {
+        savedCompanies[existingIndex]
+          ..name = name
+          ..ico = ico
+          ..address = address;
+      } else {
+        savedCompanies.add(SavedCompany(
+          id: DateTime.now().millisecondsSinceEpoch.toString(),
+          name: name,
+          ico: ico,
+          address: address,
+        ));
+      }
+    });
+    persistCompanies();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('💾 Firma "$name" uložena do seznamu.'), backgroundColor: Colors.green),
+    );
+  }
+
+  void _selectSavedCompany(SavedCompany company) {
+    setState(() {
+      _companyController.text = company.name;
+      _icoController.text = company.ico;
+      _addressController.text = company.address;
+    });
+  }
+
+  void _deleteSavedCompany(SavedCompany company) {
+    setState(() {
+      savedCompanies.removeWhere((c) => c.id == company.id);
+    });
+    persistCompanies();
   }
 
   void _startInspection() {
@@ -1223,6 +1329,35 @@ class _NewReportScreenState extends State<NewReportScreen> {
                 ),
               ],
             ),
+            const SizedBox(height: 8),
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton.icon(
+                onPressed: _saveCurrentCompanyToList,
+                icon: const Icon(Icons.bookmark_add, size: 18, color: Color(0xFF0284C7)),
+                label: const Text('Uložit firmu do seznamu', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF0284C7))),
+              ),
+            ),
+            if (savedCompanies.isNotEmpty) ...[
+              const SizedBox(height: 4),
+              const Text('MOJE FIRMY:', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.grey)),
+              const SizedBox(height: 6),
+              Wrap(
+                spacing: 8,
+                runSpacing: 6,
+                children: savedCompanies.map((company) {
+                  return InputChip(
+                    avatar: const Icon(Icons.business_center, size: 16, color: Color(0xFF10B981)),
+                    label: Text(company.name, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
+                    backgroundColor: Colors.green[50],
+                    side: BorderSide(color: Colors.green[200]!),
+                    onPressed: () => _selectSavedCompany(company),
+                    onDeleted: () => _deleteSavedCompany(company),
+                    deleteIconColor: Colors.red,
+                  );
+                }).toList(),
+              ),
+            ],
             const SizedBox(height: 18),
 
             Row(
@@ -1247,6 +1382,26 @@ class _NewReportScreenState extends State<NewReportScreen> {
                 )
               ],
             ),
+            if (_gpsCoords != null)
+              Align(
+                alignment: Alignment.centerRight,
+                child: GestureDetector(
+                  onTap: () => openGoogleMaps(_gpsCoords!),
+                  child: Padding(
+                    padding: const EdgeInsets.only(top: 4.0),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(_gpsCoords!, style: const TextStyle(fontSize: 11, color: Colors.grey)),
+                        const SizedBox(width: 6),
+                        const Icon(Icons.map, size: 15, color: Colors.red),
+                        const SizedBox(width: 3),
+                        const Text('Otevřít v Google Maps', style: TextStyle(color: Colors.blue, fontWeight: FontWeight.bold, fontSize: 12, decoration: TextDecoration.underline)),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
             const SizedBox(height: 4),
             TextField(
               controller: _locationController,
@@ -1629,6 +1784,12 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
           ],
         ),
         actions: [
+          if (widget.locationName.contains('GPS:'))
+            IconButton(
+              icon: const Icon(Icons.map, color: Colors.redAccent),
+              onPressed: () => openGoogleMaps(widget.locationName),
+              tooltip: 'Otevřít v Google Maps',
+            ),
           IconButton(
             icon: const Icon(Icons.check_circle, color: Colors.greenAccent, size: 30),
             onPressed: _finishInspection,

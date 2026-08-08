@@ -20,6 +20,7 @@ dependencies:
   # Fotografie se ukládají mimo shared_preferences – na webu jde
   # o IndexedDB (stovky MB) místo localStorage se stropem ~5 MB.
   hive_ce_flutter: ^2.3.4
+  file_picker: ^11.0.3
 
 dev_dependencies:
   flutter_test:

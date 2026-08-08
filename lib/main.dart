@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:typed_data';
+import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
@@ -387,6 +388,12 @@ class Finding {
   Uint8List? photoBytes;
   DateTime timestamp;
 
+  /// Poloha nálezu v plánu provozovny, v poměru k rozměrům obrázku (0–1).
+  /// Relativní souřadnice drží puntík na místě bez ohledu na velikost
+  /// displeje, přiblížení i rozměry stránky v PDF.
+  double? pinX;
+  double? pinY;
+
   Finding({
     required this.id,
     required this.orderNumber,
@@ -398,7 +405,12 @@ class Finding {
     this.isPhotoTaken = false,
     this.photoBytes,
     required this.timestamp,
+    this.pinX,
+    this.pinY,
   });
+
+  /// Má nález zaznamenanou polohu v plánu?
+  bool get hasPin => pinX != null && pinY != null;
 
   /// `includePhotoBytes: false` nechá snímek mimo JSON – používá se, když
   /// fotky leží v samostatném úložišti (viz `initPhotoStore`).
@@ -413,6 +425,8 @@ class Finding {
         'isPhotoTaken': isPhotoTaken,
         if (includePhotoBytes) 'photoBytes': photoBytes != null ? base64Encode(photoBytes!) : null,
         'timestamp': timestamp.toIso8601String(),
+        'pinX': pinX,
+        'pinY': pinY,
       };
 
   factory Finding.fromJson(Map<String, dynamic> json) => Finding(
@@ -426,6 +440,8 @@ class Finding {
         isPhotoTaken: json['isPhotoTaken'] as bool? ?? false,
         photoBytes: json['photoBytes'] != null ? base64Decode(json['photoBytes'] as String) : null,
         timestamp: DateTime.parse(json['timestamp'] as String),
+        pinX: (json['pinX'] as num?)?.toDouble(),
+        pinY: (json['pinY'] as num?)?.toDouble(),
       );
 }
 
@@ -439,6 +455,9 @@ class InspectionReport {
   final List<Finding> findings;
   final String? gpsCoords;
 
+  /// Plán provozovny, ke kterému se váží puntíky nálezů.
+  final String? layoutId;
+
   InspectionReport({
     required this.id,
     this.companyName = '',
@@ -448,6 +467,7 @@ class InspectionReport {
     required this.date,
     required this.findings,
     this.gpsCoords,
+    this.layoutId,
   });
 
   Map<String, dynamic> toJson({bool includePhotoBytes = true}) => {
@@ -459,6 +479,7 @@ class InspectionReport {
         'date': date.toIso8601String(),
         'findings': findings.map((f) => f.toJson(includePhotoBytes: includePhotoBytes)).toList(),
         'gpsCoords': gpsCoords,
+        'layoutId': layoutId,
       };
 
   factory InspectionReport.fromJson(Map<String, dynamic> json) => InspectionReport(
@@ -472,6 +493,7 @@ class InspectionReport {
             .map((f) => Finding.fromJson(f as Map<String, dynamic>))
             .toList(),
         gpsCoords: json['gpsCoords'] as String?,
+        layoutId: json['layoutId'] as String?,
       );
 }
 
@@ -483,6 +505,10 @@ class ActiveReportContext {
   String companyIco = '';
   String companyAddress = '';
   String locationName = '';
+
+  /// Plán provozovny pro aktuální kontrolu – z něj se do PDF vykreslí
+  /// mapka s očíslovanými puntíky nálezů.
+  String? layoutId;
 }
 
 ActiveReportContext currentReportContext = ActiveReportContext();
@@ -494,18 +520,26 @@ class SavedBranch {
   String address;
   String note;
 
+  /// Klíč plánu (layoutu) provozovny v úložišti obrázků. Samotné bajty se
+  /// načítají přes `loadStoredImage`, aby nezvětšovaly JSON v předvolbách.
+  String? layoutId;
+
   SavedBranch({
     required this.id,
     required this.name,
     this.address = '',
     this.note = '',
+    this.layoutId,
   });
+
+  bool get hasLayout => layoutId != null;
 
   Map<String, dynamic> toJson() => {
         'id': id,
         'name': name,
         'address': address,
         'note': note,
+        'layoutId': layoutId,
       };
 
   factory SavedBranch.fromJson(Map<String, dynamic> json) => SavedBranch(
@@ -513,6 +547,7 @@ class SavedBranch {
         name: json['name'] as String? ?? '',
         address: json['address'] as String? ?? '',
         note: json['note'] as String? ?? '',
+        layoutId: json['layoutId'] as String?,
       );
 }
 
@@ -612,6 +647,7 @@ void upsertSavedBranch(
   required String name,
   String address = '',
   String note = '',
+  String? layoutId,
   bool persist = true,
 }) {
   final String trimmedName = name.trim();
@@ -624,12 +660,14 @@ void upsertSavedBranch(
     company.branches[idx].name = trimmedName;
     if (address.trim().isNotEmpty) company.branches[idx].address = address.trim();
     if (note.trim().isNotEmpty) company.branches[idx].note = note.trim();
+    if (layoutId != null) company.branches[idx].layoutId = layoutId;
   } else {
     company.branches.add(SavedBranch(
-      id: DateTime.now().millisecondsSinceEpoch.toString(),
+      id: newEntityId(),
       name: trimmedName,
       address: address.trim(),
       note: note.trim(),
+      layoutId: layoutId,
     ));
   }
 
@@ -751,12 +789,13 @@ Future<void> persistCompanies() async {
 }
 
 // -----------------------------------------------------------------------------
-// ÚLOŽIŠTĚ FOTOGRAFIÍ
+// ÚLOŽIŠTĚ OBRÁZKŮ (fotografie nálezů + plány provozoven)
 //
 // Fotky se dřív ukládaly zakódované přímo do JSONu reportů v shared_preferences.
 // Na webu to znamená localStorage se stropem kolem 5 MB, do kterého se vejde
 // jen pár desítek fotek – po jeho vyčerpání se report neuloží. Snímky proto
 // leží zvlášť: na webu v IndexedDB (stovky MB), na mobilu v souboru.
+// Ve stejném úložišti jsou i plány (layouty) provozoven, které bývají větší.
 //
 // Když se úložiště nepodaří otevřít, aplikace se vrátí k původnímu chování
 // (fotky v JSONu), aby zůstala funkční i tak.
@@ -791,14 +830,45 @@ Future<void> initPhotoStore() async {
   return (count: box.length, bytes: total);
 }
 
+/// Načte obrázek z úložiště (fotka nálezu i plán provozovny).
+Uint8List? loadStoredImage(String? id) {
+  if (id == null) return null;
+  return _photoBox?.get(id);
+}
+
+/// Uloží obrázek pod vlastním klíčem. Používá se pro plány provozoven,
+/// které se ukládají hned při nahrání, ne až s reportem.
+Future<String?> saveStoredImage(Uint8List bytes, {String? id}) async {
+  final box = _photoBox;
+  if (box == null) return null;
+
+  final String key = id ?? newEntityId();
+  await box.put(key, bytes);
+  return key;
+}
+
+Future<void> deleteStoredImage(String? id) async {
+  if (id == null) return;
+  await _photoBox?.delete(id);
+}
+
 /// Zapíše fotky uložených reportů do samostatného úložiště a zahodí snímky,
-/// na které už žádný report neodkazuje.
+/// na které už nic neodkazuje. Kromě fotek nálezů drží úložiště i plány
+/// provozoven – ty musí zůstat zachované, i když k nim zatím žádný report není.
 Future<void> _syncPhotosToStore() async {
   final box = _photoBox;
   if (box == null) return;
 
   final Set<String> referenced = {};
+
+  for (final company in savedCompanies) {
+    for (final branch in company.branches) {
+      if (branch.layoutId != null) referenced.add(branch.layoutId!);
+    }
+  }
+
   for (final report in savedReports) {
+    if (report.layoutId != null) referenced.add(report.layoutId!);
     for (final finding in report.findings) {
       if (finding.photoBytes != null) {
         referenced.add(finding.id);
@@ -1566,10 +1636,45 @@ class _CompanyManagerScreenState extends State<CompanyManagerScreen> {
     final noteController = TextEditingController(text: existingBranch?.note ?? '');
     String errorMessage = '';
 
+    // Plán se drží stranou, dokud uživatel dialog nepotvrdí.
+    String? layoutId = existingBranch?.layoutId;
+    Uint8List? layoutPreview = loadStoredImage(existingBranch?.layoutId);
+
     showDialog(
       context: context,
       builder: (dialogContext) => StatefulBuilder(
         builder: (dialogContext, setDialogState) {
+          Future<void> pickLayout() async {
+            if (!isPhotoStoreReady) {
+              setDialogState(() => errorMessage =
+                  '⚠️ Úložiště obrázků není k dispozici, plán teď nelze uložit.');
+              return;
+            }
+
+            try {
+              final picked = await ImagePicker().pickImage(
+                source: ImageSource.gallery,
+                maxWidth: 2400,
+                maxHeight: 2400,
+                imageQuality: 85,
+              );
+              if (picked == null) return;
+
+              final bytes = await picked.readAsBytes();
+              final String? newId = await saveStoredImage(bytes, id: layoutId);
+              if (!dialogContext.mounted) return;
+
+              setDialogState(() {
+                layoutId = newId;
+                layoutPreview = bytes;
+                errorMessage = '';
+              });
+            } catch (e) {
+              if (!dialogContext.mounted) return;
+              setDialogState(() => errorMessage = '❌ Plán se nepodařilo načíst: $e');
+            }
+          }
+
           return AlertDialog(
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
             title: Text(
@@ -1623,6 +1728,46 @@ class _CompanyManagerScreenState extends State<CompanyManagerScreen> {
                       border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
                     ),
                   ),
+                  const SizedBox(height: 16),
+
+                  const Text('Plán / layout provozovny (nepovinné):', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                  const Text(
+                    'Při kontrole se plán zobrazí a ťuknutím do něj založíte nález na daném místě.',
+                    style: TextStyle(fontSize: 11, color: Colors.grey),
+                  ),
+                  const SizedBox(height: 6),
+                  if (layoutPreview != null)
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(8),
+                      child: Image.memory(
+                        layoutPreview!,
+                        height: 120,
+                        width: double.infinity,
+                        fit: BoxFit.contain,
+                      ),
+                    ),
+                  const SizedBox(height: 6),
+                  Wrap(
+                    spacing: 8,
+                    children: [
+                      OutlinedButton.icon(
+                        icon: const Icon(Icons.map, size: 18),
+                        label: Text(layoutPreview == null ? 'Nahrát plán' : 'Vyměnit plán'),
+                        onPressed: pickLayout,
+                      ),
+                      if (layoutPreview != null)
+                        TextButton.icon(
+                          icon: const Icon(Icons.delete_outline, size: 18, color: Colors.red),
+                          label: const Text('Odebrat plán', style: TextStyle(color: Colors.red)),
+                          onPressed: () {
+                            setDialogState(() {
+                              layoutPreview = null;
+                              layoutId = null;
+                            });
+                          },
+                        ),
+                    ],
+                  ),
                 ],
               ),
             ),
@@ -1649,6 +1794,7 @@ class _CompanyManagerScreenState extends State<CompanyManagerScreen> {
                       existingBranch.name = nameController.text.trim();
                       existingBranch.address = addressController.text.trim();
                       existingBranch.note = noteController.text.trim();
+                      existingBranch.layoutId = layoutId;
                       persistCompanies();
                     } else {
                       upsertSavedBranch(
@@ -1656,6 +1802,7 @@ class _CompanyManagerScreenState extends State<CompanyManagerScreen> {
                         name: nameController.text,
                         address: addressController.text,
                         note: noteController.text,
+                        layoutId: layoutId,
                       );
                     }
                   });
@@ -1841,6 +1988,215 @@ class _CompanyManagerScreenState extends State<CompanyManagerScreen> {
         ),
       ),
     );
+  }
+}
+
+// -----------------------------------------------------------------------------
+// PLÁN PROVOZOVNY – ŤUKNUTÍM SE ZAKLÁDÁ NÁLEZ
+// -----------------------------------------------------------------------------
+
+/// Co uživatel v plánu udělal – buď ťukl do volného místa (nový nález na dané
+/// pozici), nebo na existující puntík (otevřít nález k úpravě).
+class LayoutTapResult {
+  final double? x;
+  final double? y;
+  final Finding? existingFinding;
+
+  LayoutTapResult.newPin(this.x, this.y) : existingFinding = null;
+  LayoutTapResult.openFinding(this.existingFinding) : x = null, y = null;
+
+  bool get isNewPin => existingFinding == null;
+}
+
+/// Zjistí rozměry obrázku, aby se dal vykreslit ve správném poměru stran.
+/// Bez toho by ťuknutí padalo vedle – obrázek by měl kolem sebe prázdné pruhy,
+/// se kterými by se souřadnice nepřepočítaly správně.
+Future<Size?> decodeImageSize(Uint8List bytes) async {
+  try {
+    final codec = await ui.instantiateImageCodec(bytes);
+    final frame = await codec.getNextFrame();
+    final size = Size(frame.image.width.toDouble(), frame.image.height.toDouble());
+    frame.image.dispose();
+    codec.dispose();
+    return size;
+  } catch (e) {
+    debugPrint('Nepodařilo se zjistit rozměry plánu: $e');
+    return null;
+  }
+}
+
+class LayoutPinScreen extends StatefulWidget {
+  final Uint8List layoutBytes;
+  final List<Finding> findings;
+  final String title;
+
+  /// Rozměry plánu, jsou-li už známé. Když se nepředají, zjistí se z obrázku.
+  final Size? imageSize;
+
+  const LayoutPinScreen({
+    Key? key,
+    required this.layoutBytes,
+    required this.findings,
+    this.title = 'Plán provozovny',
+    this.imageSize,
+  }) : super(key: key);
+
+  @override
+  State<LayoutPinScreen> createState() => _LayoutPinScreenState();
+}
+
+class _LayoutPinScreenState extends State<LayoutPinScreen> {
+  Size? _imageSize;
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.imageSize != null) {
+      _imageSize = widget.imageSize;
+      _loading = false;
+    } else {
+      _loadSize();
+    }
+  }
+
+  Future<void> _loadSize() async {
+    final size = await decodeImageSize(widget.layoutBytes);
+    if (!mounted) return;
+    setState(() {
+      _imageSize = size;
+      _loading = false;
+    });
+  }
+
+  /// Puntíky, které se vejdou do plánu (nález bez pozice se nezobrazuje).
+  List<Finding> get _pinned => widget.findings.where((f) => f.hasPin).toList();
+
+  @override
+  Widget build(BuildContext context) {
+    if (_loading) {
+      return Scaffold(
+        appBar: AppBar(title: Text(widget.title)),
+        body: const Center(child: CircularProgressIndicator()),
+      );
+    }
+
+    final Size imageSize = _imageSize ?? const Size(4, 3);
+    final int pinnedCount = _pinned.length;
+    final int unpinnedCount = widget.findings.length - pinnedCount;
+
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(widget.title),
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(30),
+          child: Padding(
+            padding: const EdgeInsets.only(bottom: 8.0, left: 16, right: 16),
+            child: Text(
+              'Ťukněte do plánu = nový nález • Ťukněte na číslo = úprava nálezu',
+              style: TextStyle(fontSize: 11, color: Colors.blue[100]),
+            ),
+          ),
+        ),
+      ),
+      bottomNavigationBar: SafeArea(
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          color: Colors.grey[100],
+          child: Row(
+            children: [
+              const Icon(Icons.place, size: 16, color: Color(0xFF0284C7)),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  unpinnedCount > 0
+                      ? 'V plánu: $pinnedCount nálezů • bez polohy: $unpinnedCount'
+                      : 'V plánu: $pinnedCount nálezů',
+                  style: TextStyle(fontSize: 11, color: Colors.grey[700]),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+      body: Center(
+        child: InteractiveViewer(
+          minScale: 1,
+          maxScale: 6,
+          // Gesto je uvnitř zvětšované oblasti, takže souřadnice ťuknutí
+          // dostaneme rovnou v soustavě obrázku – nemusí se přepočítávat
+          // podle aktuálního přiblížení ani posunu.
+          child: AspectRatio(
+            aspectRatio: imageSize.width / imageSize.height,
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final double w = constraints.maxWidth;
+                final double h = constraints.maxHeight;
+
+                return GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTapUp: (details) {
+                    final double rx = (details.localPosition.dx / w).clamp(0.0, 1.0);
+                    final double ry = (details.localPosition.dy / h).clamp(0.0, 1.0);
+                    Navigator.pop(context, LayoutTapResult.newPin(rx, ry));
+                  },
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      Image.memory(widget.layoutBytes, fit: BoxFit.fill),
+                      ..._pinned.map((finding) {
+                        return Positioned(
+                          left: finding.pinX! * w - 14,
+                          top: finding.pinY! * h - 14,
+                          child: GestureDetector(
+                            onTap: () => Navigator.pop(context, LayoutTapResult.openFinding(finding)),
+                            child: Container(
+                              width: 28,
+                              height: 28,
+                              decoration: BoxDecoration(
+                                color: _severityUiColor(finding.severity),
+                                shape: BoxShape.circle,
+                                border: Border.all(color: Colors.white, width: 2),
+                                boxShadow: const [
+                                  BoxShadow(color: Colors.black38, blurRadius: 3, offset: Offset(0, 1)),
+                                ],
+                              ),
+                              alignment: Alignment.center,
+                              child: Text(
+                                '${finding.orderNumber}',
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ),
+                          ),
+                        );
+                      }),
+                    ],
+                  ),
+                );
+              },
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Barva puntíku podle závažnosti – stejná logika jako u odznaků v PDF.
+Color _severityUiColor(String severity) {
+  switch (severity) {
+    case 'Vysoká':
+      return Colors.red[700]!;
+    case 'Střední':
+      return Colors.orange[700]!;
+    case 'Nízká':
+      return Colors.amber[700]!;
+    default:
+      return const Color(0xFF0284C7);
   }
 }
 
@@ -2175,6 +2531,7 @@ class _NewReportScreenState extends State<NewReportScreen> {
   final TextEditingController _addressController = TextEditingController();
   final TextEditingController _locationController = TextEditingController();
   String? _gpsCoords;
+  String? _selectedLayoutId;
   bool _isLoadingAres = false;
   bool _isLoadingAresName = false;
   bool _isLoadingGps = false;
@@ -2552,9 +2909,29 @@ class _NewReportScreenState extends State<NewReportScreen> {
         _addressController.text = picked.company.address;
         if (picked.branch != null) {
           _locationController.text = picked.branch!.name;
+          _selectedLayoutId = picked.branch!.layoutId;
+        } else {
+          _selectedLayoutId = null;
         }
       });
     }
+  }
+
+  /// Plán provozovny vybrané ze seznamu "mých firem". Pokud uživatel zadá
+  /// lokaci ručně, dohledá se plán podle názvu provozovny.
+  String? _resolveLayoutId(String companyName, String branchName) {
+    if (_selectedLayoutId != null) return _selectedLayoutId;
+    if (companyName.trim().isEmpty || branchName.trim().isEmpty) return null;
+
+    for (final company in savedCompanies) {
+      if (_normalizeForMatch(company.name) != _normalizeForMatch(companyName)) continue;
+      for (final branch in company.branches) {
+        if (_normalizeForMatch(branch.name) == _normalizeForMatch(branchName)) {
+          return branch.layoutId;
+        }
+      }
+    }
+    return null;
   }
 
   void _startInspection() {
@@ -2580,6 +2957,7 @@ class _NewReportScreenState extends State<NewReportScreen> {
           companyName: comp,
           companyIco: _icoController.text.trim(),
           companyAddress: _addressController.text.trim(),
+          layoutId: _resolveLayoutId(comp, branchName),
         ),
       ),
     );
@@ -2831,6 +3209,7 @@ class _NewReportScreenState extends State<NewReportScreen> {
                               companyName: report.companyName,
                               companyIco: report.companyIco,
                               companyAddress: report.companyAddress,
+                              layoutId: report.layoutId,
                             ),
                           ),
                         );
@@ -2855,12 +3234,16 @@ class InspectionModeScreen extends StatefulWidget {
   final String companyIco;
   final String companyAddress;
 
+  /// Plán provozovny, do kterého se ťuká při zakládání nálezů.
+  final String? layoutId;
+
   const InspectionModeScreen({
     Key? key,
     required this.locationName,
     this.companyName = '',
     this.companyIco = '',
     this.companyAddress = '',
+    this.layoutId,
   }) : super(key: key);
 
   @override
@@ -2893,7 +3276,42 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
       ..companyName = widget.companyName
       ..companyIco = widget.companyIco
       ..companyAddress = widget.companyAddress
-      ..locationName = widget.locationName;
+      ..locationName = widget.locationName
+      ..layoutId = widget.layoutId;
+  }
+
+  /// Poloha v plánu, kterou dostane příští uložený nález.
+  double? _pendingPinX;
+  double? _pendingPinY;
+
+  Uint8List? get _layoutBytes => loadStoredImage(widget.layoutId);
+
+  Future<void> _openLayout() async {
+    final bytes = _layoutBytes;
+    if (bytes == null) return;
+
+    final result = await Navigator.push<LayoutTapResult>(
+      context,
+      MaterialPageRoute(
+        builder: (context) => LayoutPinScreen(
+          layoutBytes: bytes,
+          findings: globalFindings,
+          title: 'Plán: ${widget.locationName}',
+        ),
+      ),
+    );
+    if (result == null || !mounted) return;
+
+    if (result.isNewPin) {
+      setState(() {
+        _pendingPinX = result.x;
+        _pendingPinY = result.y;
+        _statusMessage = '📍 Poloha v plánu zaznamenána – doplňte nález a uložte.';
+      });
+    } else {
+      final index = globalFindings.indexOf(result.existingFinding!);
+      if (index >= 0) _loadFindingIntoForm(index);
+    }
   }
 
   Future<void> _pickPhoto(ImageSource source) async {
@@ -3010,6 +3428,11 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
         existing.photoBytes = _currentPhotoBytes;
         existing.isPhotoTaken = _currentPhotoBytes != null;
         existing.legislation = matchedLegislation;
+        // Poloha se přepíše jen tehdy, když uživatel ťukl do plánu znovu.
+        if (_pendingPinX != null && _pendingPinY != null) {
+          existing.pinX = _pendingPinX;
+          existing.pinY = _pendingPinY;
+        }
         _statusMessage = '⚡ Nález #${existing.orderNumber} aktualizován!$matchLabel';
       } else {
         final newFinding = Finding(
@@ -3023,6 +3446,8 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
           photoBytes: _currentPhotoBytes,
           isPhotoTaken: _currentPhotoBytes != null,
           timestamp: DateTime.now(),
+          pinX: _pendingPinX,
+          pinY: _pendingPinY,
         );
 
         globalFindings.add(newFinding);
@@ -3040,6 +3465,8 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
     _placeController.clear();
     _selectedCategory = 'BOZP';
     _selectedSeverity = 'Střední';
+    _pendingPinX = null;
+    _pendingPinY = null;
   }
 
   void _loadFindingIntoForm(int index) {
@@ -3067,6 +3494,7 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
         locationName: widget.locationName,
         date: DateTime.now(),
         findings: List.from(globalFindings),
+        layoutId: widget.layoutId,
       );
       savedReports.insert(0, report);
       persistReports();
@@ -3141,6 +3569,26 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
                   ],
                 ),
               ),
+
+            if (_layoutBytes != null) ...[
+              ElevatedButton.icon(
+                icon: const Icon(Icons.map, size: 22),
+                label: Text(
+                  _pendingPinX != null
+                      ? 'POLOHA V PLÁNU ZAZNAMENÁNA – ZMĚNIT'
+                      : 'OTEVŘÍT PLÁN A ŤUKNOUT NA MÍSTO',
+                  style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
+                ),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: _pendingPinX != null ? Colors.green[700] : const Color(0xFF1E293B),
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                ),
+                onPressed: _openLayout,
+              ),
+              const SizedBox(height: 12),
+            ],
 
             GestureDetector(
               onTap: _showImageSourceDialog,
@@ -3502,6 +3950,7 @@ class ReportsHistoryScreen extends StatelessWidget {
                             companyName: report.companyName,
                             companyIco: report.companyIco,
                             companyAddress: report.companyAddress,
+                            layoutId: report.layoutId,
                           ),
                         ),
                       );
@@ -3591,6 +4040,102 @@ class _RevisionTableScreenState extends State<RevisionTableScreen> {
     );
   }
 
+  /// Plán provozovny s očíslovanými puntíky. Obrázek se vykreslí v pevné
+  /// šířce podle stránky a puntíky se umístí ze vztažných souřadnic (0–1),
+  /// takže sedí bez ohledu na rozlišení nahraného plánu.
+  pw.Widget _layoutPlanWidget(Uint8List layoutBytes, Size layoutSize, List<Finding> pinned) {
+    // Šířka sazby A4 po odečtení okrajů (30 + 30).
+    final double planWidth = PdfPageFormat.a4.width - 60;
+    final double planHeight = planWidth * layoutSize.height / layoutSize.width;
+    const double pinSize = 16;
+
+    return pw.Container(
+      width: planWidth,
+      height: planHeight,
+      decoration: pw.BoxDecoration(border: pw.Border.all(color: PdfColors.grey400)),
+      child: pw.Stack(
+        children: [
+          pw.Positioned(
+            left: 0,
+            top: 0,
+            child: pw.Image(
+              pw.MemoryImage(layoutBytes),
+              width: planWidth,
+              height: planHeight,
+              fit: pw.BoxFit.fill,
+            ),
+          ),
+          ...pinned.map((f) {
+            return pw.Positioned(
+              left: f.pinX! * planWidth - pinSize / 2,
+              top: f.pinY! * planHeight - pinSize / 2,
+              child: pw.Container(
+                width: pinSize,
+                height: pinSize,
+                decoration: pw.BoxDecoration(
+                  color: _severityColor(f.severity),
+                  shape: pw.BoxShape.circle,
+                  border: pw.Border.all(color: PdfColors.white, width: 1.5),
+                ),
+                alignment: pw.Alignment.center,
+                child: pw.Text(
+                  '${f.orderNumber}',
+                  style: pw.TextStyle(color: PdfColors.white, fontSize: 8, fontWeight: pw.FontWeight.bold),
+                ),
+              ),
+            );
+          }),
+        ],
+      ),
+    );
+  }
+
+  /// Stručný seznam pod plánem: co které číslo v plánu znamená.
+  pw.Widget _layoutLegend(List<Finding> pinned, int totalFindings) {
+    final int withoutPin = totalFindings - pinned.length;
+
+    return pw.Column(
+      crossAxisAlignment: pw.CrossAxisAlignment.start,
+      children: [
+        ...pinned.map((f) => pw.Padding(
+              padding: const pw.EdgeInsets.only(bottom: 3),
+              child: pw.Row(
+                crossAxisAlignment: pw.CrossAxisAlignment.start,
+                children: [
+                  pw.Container(
+                    width: 14,
+                    height: 14,
+                    decoration: pw.BoxDecoration(
+                      color: _severityColor(f.severity),
+                      shape: pw.BoxShape.circle,
+                    ),
+                    alignment: pw.Alignment.center,
+                    child: pw.Text(
+                      '${f.orderNumber}',
+                      style: pw.TextStyle(color: PdfColors.white, fontSize: 7, fontWeight: pw.FontWeight.bold),
+                    ),
+                  ),
+                  pw.SizedBox(width: 6),
+                  pw.Expanded(
+                    child: pw.Text(
+                      '${f.locationDetail.isNotEmpty ? "${f.locationDetail} – " : ""}${f.description}',
+                      style: const pw.TextStyle(fontSize: 9),
+                    ),
+                  ),
+                ],
+              ),
+            )),
+        if (withoutPin > 0) ...[
+          pw.SizedBox(height: 4),
+          pw.Text(
+            'Bez vyznačené polohy v plánu: $withoutPin ${withoutPin == 1 ? "nález" : "nálezů"} (viz detail níže).',
+            style: const pw.TextStyle(fontSize: 9, color: PdfColors.grey600),
+          ),
+        ],
+      ],
+    );
+  }
+
   pw.Widget _statChip(String label, int count, PdfColor color) {
     return pw.Container(
       padding: const pw.EdgeInsets.symmetric(horizontal: 10, vertical: 6),
@@ -3623,6 +4168,12 @@ class _RevisionTableScreenState extends State<RevisionTableScreen> {
     }
 
     final ctx = currentReportContext;
+
+    // Plán provozovny s očíslovanými puntíky – rozměry potřebujeme dopředu,
+    // aby se puntíky daly umístit ze vztažných souřadnic (0–1).
+    final Uint8List? layoutBytes = loadStoredImage(ctx.layoutId);
+    final List<Finding> pinnedFindings = globalFindings.where((f) => f.hasPin).toList();
+    final Size? layoutSize = layoutBytes != null ? await decodeImageSize(layoutBytes) : null;
 
     pdf.addPage(
       pw.MultiPage(
@@ -3722,6 +4273,21 @@ class _RevisionTableScreenState extends State<RevisionTableScreen> {
                 for (final entry in byCategory.entries) _statChip(entry.key, entry.value, _pdfBlue),
               ],
             ),
+
+            // --- PLÁN PROVOZOVNY S OČÍSLOVANÝMI NÁLEZY ---
+            if (layoutBytes != null && layoutSize != null) ...[
+              pw.NewPage(),
+              pw.Text('PLÁN PROVOZOVNY', style: pw.TextStyle(fontSize: 14, fontWeight: pw.FontWeight.bold, color: _pdfNavy)),
+              pw.SizedBox(height: 4),
+              pw.Text(
+                'Čísla v plánu odpovídají číslům nálezů v seznamu níže.',
+                style: const pw.TextStyle(fontSize: 9, color: PdfColors.grey600),
+              ),
+              pw.SizedBox(height: 8),
+              _layoutPlanWidget(layoutBytes, layoutSize, pinnedFindings),
+              pw.SizedBox(height: 10),
+              _layoutLegend(pinnedFindings, globalFindings.length),
+            ],
 
             pw.NewPage(),
 

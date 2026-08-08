@@ -16,6 +16,7 @@ import 'package:geolocator/geolocator.dart';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await loadPersistedData();
+  await restoreAuthSession();
   handleOAuthRedirectIfPresent();
   runApp(const EkodavSafetyApp());
 }
@@ -1020,6 +1021,445 @@ class _CloudSyncScreenState extends State<CloudSyncScreen> {
 }
 
 // -----------------------------------------------------------------------------
+// PŘIHLÁŠENÍ / REGISTRACE (Firebase Authentication + Realtime Database přes REST)
+// -----------------------------------------------------------------------------
+// DŮLEŽITÉ: doplň skutečný Web API Key a URL databáze z Firebase Console
+// (Project settings → General, a Build → Realtime Database).
+const String kFirebaseApiKey = 'TODO_DOPLNIT_FIREBASE_WEB_API_KEY';
+const String kFirebaseDatabaseUrl = 'TODO_DOPLNIT_FIREBASE_DATABASE_URL';
+
+const String _kAuthSessionKey = 'ekodav_auth_session_v1';
+
+class UserProfile {
+  String uid;
+  String email;
+  String firstName;
+  String lastName;
+  String phone;
+  String address;
+  String bozpCertNumber;
+  String poCertNumber;
+
+  UserProfile({
+    required this.uid,
+    required this.email,
+    required this.firstName,
+    required this.lastName,
+    required this.phone,
+    this.address = '',
+    this.bozpCertNumber = '',
+    this.poCertNumber = '',
+  });
+
+  String get fullName => '$firstName $lastName'.trim();
+
+  Map<String, dynamic> toJson() => {
+        'uid': uid,
+        'email': email,
+        'firstName': firstName,
+        'lastName': lastName,
+        'phone': phone,
+        'address': address,
+        'bozpCertNumber': bozpCertNumber,
+        'poCertNumber': poCertNumber,
+      };
+
+  factory UserProfile.fromJson(Map<String, dynamic> json) => UserProfile(
+        uid: json['uid'] as String? ?? '',
+        email: json['email'] as String? ?? '',
+        firstName: json['firstName'] as String? ?? '',
+        lastName: json['lastName'] as String? ?? '',
+        phone: json['phone'] as String? ?? '',
+        address: json['address'] as String? ?? '',
+        bozpCertNumber: json['bozpCertNumber'] as String? ?? '',
+        poCertNumber: json['poCertNumber'] as String? ?? '',
+      );
+}
+
+class AuthState {
+  String? idToken;
+  String? refreshToken;
+  DateTime? tokenExpiry;
+  UserProfile? profile;
+
+  bool get isLoggedIn => idToken != null && profile != null;
+  bool get isTokenExpiringSoon =>
+      tokenExpiry == null || DateTime.now().isAfter(tokenExpiry!.subtract(const Duration(minutes: 5)));
+}
+
+AuthState currentAuth = AuthState();
+
+String _friendlyFirebaseError(String code) {
+  switch (code) {
+    case 'EMAIL_NOT_FOUND':
+    case 'INVALID_PASSWORD':
+    case 'INVALID_LOGIN_CREDENTIALS':
+      return 'Nesprávný email nebo heslo.';
+    case 'EMAIL_EXISTS':
+      return 'Tento email už je zaregistrovaný.';
+    case 'INVALID_EMAIL':
+      return 'Neplatný formát emailu.';
+    case 'TOKEN_EXPIRED':
+      return 'Přihlášení vypršelo, přihlaste se prosím znovu.';
+    default:
+      if (code.startsWith('WEAK_PASSWORD')) return 'Heslo musí mít alespoň 6 znaků.';
+      return code.isEmpty ? 'Neznámá chyba.' : code;
+  }
+}
+
+Future<void> _saveProfileToDatabase(String idToken, String uid, UserProfile profile) async {
+  final resp = await http.put(
+    Uri.parse('$kFirebaseDatabaseUrl/users/$uid.json?auth=$idToken'),
+    body: jsonEncode(profile.toJson()),
+  );
+  if (resp.statusCode >= 300) {
+    throw 'uložení profilu selhalo (${resp.statusCode})';
+  }
+}
+
+Future<UserProfile?> _loadProfileFromDatabase(String idToken, String uid) async {
+  final resp = await http.get(Uri.parse('$kFirebaseDatabaseUrl/users/$uid.json?auth=$idToken'));
+  if (resp.statusCode != 200) return null;
+  if (resp.body == 'null') return null;
+  return UserProfile.fromJson(jsonDecode(resp.body) as Map<String, dynamic>);
+}
+
+Future<void> _persistAuthSession() async {
+  final prefs = await SharedPreferences.getInstance();
+  if (!currentAuth.isLoggedIn) {
+    await prefs.remove(_kAuthSessionKey);
+    return;
+  }
+  await prefs.setString(
+    _kAuthSessionKey,
+    jsonEncode({
+      'idToken': currentAuth.idToken,
+      'refreshToken': currentAuth.refreshToken,
+      'tokenExpiry': currentAuth.tokenExpiry?.toIso8601String(),
+      'profile': currentAuth.profile!.toJson(),
+    }),
+  );
+}
+
+/// Zavolat při startu appky – obnoví přihlášení z localStorage a v případě
+/// potřeby rovnou vymění expirovaný token za nový (bez nutnosti se znovu hlásit).
+Future<void> restoreAuthSession() async {
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_kAuthSessionKey);
+    if (raw == null) return;
+    final data = jsonDecode(raw) as Map<String, dynamic>;
+    currentAuth
+      ..idToken = data['idToken'] as String?
+      ..refreshToken = data['refreshToken'] as String?
+      ..tokenExpiry = DateTime.tryParse(data['tokenExpiry'] as String? ?? '')
+      ..profile = UserProfile.fromJson(data['profile'] as Map<String, dynamic>);
+
+    if (currentAuth.isTokenExpiringSoon) {
+      await _refreshAuthToken();
+    }
+  } catch (e) {
+    debugPrint('Nepodařilo se obnovit přihlášení: $e');
+  }
+}
+
+Future<void> _refreshAuthToken() async {
+  final refreshToken = currentAuth.refreshToken;
+  if (refreshToken == null) return;
+  try {
+    final resp = await http.post(
+      Uri.https('securetoken.googleapis.com', '/v1/token', {'key': kFirebaseApiKey}),
+      headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+      body: {'grant_type': 'refresh_token', 'refresh_token': refreshToken},
+    );
+    if (resp.statusCode != 200) {
+      currentAuth = AuthState();
+      await _persistAuthSession();
+      return;
+    }
+    final data = jsonDecode(resp.body) as Map<String, dynamic>;
+    currentAuth
+      ..idToken = data['id_token'] as String
+      ..refreshToken = data['refresh_token'] as String
+      ..tokenExpiry = DateTime.now().add(Duration(seconds: int.parse(data['expires_in'] as String)));
+    await _persistAuthSession();
+  } catch (e) {
+    debugPrint('Nepodařilo se obnovit token: $e');
+  }
+}
+
+Future<void> registerUser({
+  required String email,
+  required String password,
+  required UserProfile profileData,
+}) async {
+  final signUpResp = await http.post(
+    Uri.https('identitytoolkit.googleapis.com', '/v1/accounts:signUp', {'key': kFirebaseApiKey}),
+    body: jsonEncode({'email': email, 'password': password, 'returnSecureToken': true}),
+  );
+  if (signUpResp.statusCode != 200) {
+    final err = jsonDecode(signUpResp.body) as Map<String, dynamic>;
+    throw _friendlyFirebaseError((err['error']?['message'] ?? '').toString());
+  }
+  final data = jsonDecode(signUpResp.body) as Map<String, dynamic>;
+  final idToken = data['idToken'] as String;
+  final uid = data['localId'] as String;
+
+  profileData.uid = uid;
+  profileData.email = email;
+  await _saveProfileToDatabase(idToken, uid, profileData);
+
+  currentAuth
+    ..idToken = idToken
+    ..refreshToken = data['refreshToken'] as String
+    ..tokenExpiry = DateTime.now().add(Duration(seconds: int.parse(data['expiresIn'] as String)))
+    ..profile = profileData;
+  await _persistAuthSession();
+}
+
+Future<void> loginUser({required String email, required String password}) async {
+  final resp = await http.post(
+    Uri.https('identitytoolkit.googleapis.com', '/v1/accounts:signInWithPassword', {'key': kFirebaseApiKey}),
+    body: jsonEncode({'email': email, 'password': password, 'returnSecureToken': true}),
+  );
+  if (resp.statusCode != 200) {
+    final err = jsonDecode(resp.body) as Map<String, dynamic>;
+    throw _friendlyFirebaseError((err['error']?['message'] ?? '').toString());
+  }
+  final data = jsonDecode(resp.body) as Map<String, dynamic>;
+  final idToken = data['idToken'] as String;
+  final uid = data['localId'] as String;
+
+  final profile = await _loadProfileFromDatabase(idToken, uid) ??
+      UserProfile(uid: uid, email: email, firstName: '', lastName: '', phone: '');
+
+  currentAuth
+    ..idToken = idToken
+    ..refreshToken = data['refreshToken'] as String
+    ..tokenExpiry = DateTime.now().add(Duration(seconds: int.parse(data['expiresIn'] as String)))
+    ..profile = profile;
+  await _persistAuthSession();
+}
+
+Future<void> logoutUser() async {
+  currentAuth = AuthState();
+  await _persistAuthSession();
+}
+
+class LoginScreen extends StatefulWidget {
+  const LoginScreen({Key? key}) : super(key: key);
+
+  @override
+  State<LoginScreen> createState() => _LoginScreenState();
+}
+
+class _LoginScreenState extends State<LoginScreen> {
+  final _emailController = TextEditingController();
+  final _passwordController = TextEditingController();
+  bool _isLoading = false;
+  bool _obscurePassword = true;
+
+  Future<void> _submit() async {
+    if (_emailController.text.trim().isEmpty || _passwordController.text.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('⚠️ Vyplňte email i heslo.'), backgroundColor: Colors.red),
+      );
+      return;
+    }
+    setState(() => _isLoading = true);
+    try {
+      await loginUser(email: _emailController.text.trim(), password: _passwordController.text);
+      if (mounted) Navigator.pop(context, true);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('❌ $e'), backgroundColor: Colors.red),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Přihlášení')),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const SizedBox(height: 20),
+            buildEkodavMainLogo(),
+            const SizedBox(height: 30),
+            TextField(
+              controller: _emailController,
+              keyboardType: TextInputType.emailAddress,
+              decoration: InputDecoration(
+                labelText: 'Email',
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                prefixIcon: const Icon(Icons.email),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _passwordController,
+              obscureText: _obscurePassword,
+              decoration: InputDecoration(
+                labelText: 'Heslo',
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                prefixIcon: const Icon(Icons.lock),
+                suffixIcon: IconButton(
+                  icon: Icon(_obscurePassword ? Icons.visibility : Icons.visibility_off),
+                  onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
+                ),
+              ),
+              onSubmitted: (_) => _submit(),
+            ),
+            const SizedBox(height: 20),
+            ElevatedButton(
+              onPressed: _isLoading ? null : _submit,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF0284C7),
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(vertical: 14),
+              ),
+              child: _isLoading
+                  ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                  : const Text('PŘIHLÁSIT SE', style: TextStyle(fontWeight: FontWeight.bold)),
+            ),
+            const SizedBox(height: 12),
+            TextButton(
+              onPressed: () async {
+                final registered = await Navigator.push<bool>(
+                  context,
+                  MaterialPageRoute(builder: (context) => const RegisterScreen()),
+                );
+                if (registered == true && mounted) Navigator.pop(context, true);
+              },
+              child: const Text('Nemáte účet? Zaregistrujte se'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class RegisterScreen extends StatefulWidget {
+  const RegisterScreen({Key? key}) : super(key: key);
+
+  @override
+  State<RegisterScreen> createState() => _RegisterScreenState();
+}
+
+class _RegisterScreenState extends State<RegisterScreen> {
+  final _firstNameController = TextEditingController();
+  final _lastNameController = TextEditingController();
+  final _emailController = TextEditingController();
+  final _phoneController = TextEditingController();
+  final _passwordController = TextEditingController();
+  final _addressController = TextEditingController();
+  final _bozpCertController = TextEditingController();
+  final _poCertController = TextEditingController();
+  bool _isLoading = false;
+
+  Future<void> _submit() async {
+    if (_firstNameController.text.trim().isEmpty ||
+        _lastNameController.text.trim().isEmpty ||
+        _emailController.text.trim().isEmpty ||
+        _phoneController.text.trim().isEmpty ||
+        _passwordController.text.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('⚠️ Vyplňte prosím jméno, příjmení, email, telefon a heslo.'), backgroundColor: Colors.red),
+      );
+      return;
+    }
+    if (_passwordController.text.length < 6) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('⚠️ Heslo musí mít alespoň 6 znaků.'), backgroundColor: Colors.red),
+      );
+      return;
+    }
+
+    setState(() => _isLoading = true);
+    try {
+      final profile = UserProfile(
+        uid: '',
+        email: _emailController.text.trim(),
+        firstName: _firstNameController.text.trim(),
+        lastName: _lastNameController.text.trim(),
+        phone: _phoneController.text.trim(),
+        address: _addressController.text.trim(),
+        bozpCertNumber: _bozpCertController.text.trim(),
+        poCertNumber: _poCertController.text.trim(),
+      );
+      await registerUser(email: profile.email, password: _passwordController.text, profileData: profile);
+      if (mounted) Navigator.pop(context, true);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('❌ $e'), backgroundColor: Colors.red),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  Widget _field(TextEditingController controller, String label, {bool required = false, TextInputType? keyboardType, bool obscure = false}) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: TextField(
+        controller: controller,
+        keyboardType: keyboardType,
+        obscureText: obscure,
+        decoration: InputDecoration(
+          labelText: required ? '$label *' : '$label (nepovinné)',
+          border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Registrace')),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            _field(_firstNameController, 'Jméno', required: true),
+            _field(_lastNameController, 'Příjmení', required: true),
+            _field(_emailController, 'Email', required: true, keyboardType: TextInputType.emailAddress),
+            _field(_phoneController, 'Telefon', required: true, keyboardType: TextInputType.phone),
+            _field(_passwordController, 'Heslo (min. 6 znaků)', required: true, obscure: true),
+            _field(_addressController, 'Adresa'),
+            _field(_bozpCertController, 'Číslo osvědčení BOZP'),
+            _field(_poCertController, 'Číslo osvědčení PO'),
+            const SizedBox(height: 10),
+            ElevatedButton(
+              onPressed: _isLoading ? null : _submit,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF10B981),
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(vertical: 14),
+              ),
+              child: _isLoading
+                  ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                  : const Text('ZAREGISTROVAT SE', style: TextStyle(fontWeight: FontWeight.bold)),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// -----------------------------------------------------------------------------
 // 1. DOMOVSKÁ OBRAZOVKA
 // -----------------------------------------------------------------------------
 class HomeScreen extends StatefulWidget {
@@ -1056,6 +1496,39 @@ class _HomeScreenState extends State<HomeScreen> {
         backgroundColor: Theme.of(context).colorScheme.primary,
         centerTitle: true,
         title: buildEkodavLogoHeader(),
+        actions: [
+          IconButton(
+            icon: Icon(currentAuth.isLoggedIn ? Icons.account_circle : Icons.login, color: Colors.white),
+            tooltip: currentAuth.isLoggedIn ? currentAuth.profile!.fullName : 'Přihlásit se',
+            onPressed: () async {
+              if (currentAuth.isLoggedIn) {
+                final logout = await showDialog<bool>(
+                  context: context,
+                  builder: (context) => AlertDialog(
+                    title: Text(currentAuth.profile!.fullName),
+                    content: Text(
+                      '${currentAuth.profile!.email}\n'
+                      '${currentAuth.profile!.phone}'
+                      '${currentAuth.profile!.bozpCertNumber.isNotEmpty ? "\nBOZP: ${currentAuth.profile!.bozpCertNumber}" : ""}'
+                      '${currentAuth.profile!.poCertNumber.isNotEmpty ? "\nPO: ${currentAuth.profile!.poCertNumber}" : ""}',
+                    ),
+                    actions: [
+                      TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Zavřít')),
+                      TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('Odhlásit se')),
+                    ],
+                  ),
+                );
+                if (logout == true) {
+                  await logoutUser();
+                  setState(() {});
+                }
+              } else {
+                await Navigator.push(context, MaterialPageRoute(builder: (context) => const LoginScreen()));
+                setState(() {});
+              }
+            },
+          ),
+        ],
       ),
       body: SafeArea(
         child: Padding(
@@ -3232,6 +3705,15 @@ class _RevisionTableScreenState extends State<RevisionTableScreen> {
                 ),
               );
             }).toList(),
+            if (currentAuth.isLoggedIn) ...[
+              pw.SizedBox(height: 16),
+              pw.Text(
+                'Kontrolu provedl: ${currentAuth.profile!.fullName}'
+                '${currentAuth.profile!.bozpCertNumber.isNotEmpty ? " • č. osvědčení BOZP: ${currentAuth.profile!.bozpCertNumber}" : ""}'
+                '${currentAuth.profile!.poCertNumber.isNotEmpty ? " • č. osvědčení PO: ${currentAuth.profile!.poCertNumber}" : ""}',
+                style: pw.TextStyle(fontSize: 10, color: _pdfSlate),
+              ),
+            ],
             if (_signatureBytes != null) ...[
               pw.SizedBox(height: 16),
               pw.Text('Podpis kontrolora:', style: pw.TextStyle(fontSize: 10, fontWeight: pw.FontWeight.bold, color: _pdfSlate)),

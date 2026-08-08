@@ -17,6 +17,9 @@ dependencies:
   http: ^1.6.0
   shared_preferences: ^2.2.3
   geolocator: ^13.0.1
+  # Fotografie se ukládají mimo shared_preferences – na webu jde
+  # o IndexedDB (stovky MB) místo localStorage se stropem ~5 MB.
+  hive_ce_flutter: ^2.3.4
 
 dev_dependencies:
   flutter_test:

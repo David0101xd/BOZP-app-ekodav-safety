@@ -9,9 +9,11 @@ import 'package:printing/printing.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:hive_ce_flutter/hive_flutter.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await initPhotoStore();
   await loadPersistedData();
   runApp(const EkodavSafetyApp());
 }
@@ -61,6 +63,13 @@ const List<String> kDefaultSubLocations = [
 /// Seznam oblastí / míst nálezu nabízených při zadávání nálezu.
 /// Uživatel si ho spravuje sám (obrazovka "Seznam míst / oblastí").
 Set<String> subLocationHistory = {...kDefaultSubLocations};
+
+int _idSequence = 0;
+
+/// Jednoznačné ID záznamu. Samotný čas v milisekundách nestačí – pod ID nálezu
+/// se v úložišti ukládá i jeho fotografie, takže by shoda dvou ID znamenala
+/// přepsaný snímek.
+String newEntityId() => '${DateTime.now().millisecondsSinceEpoch}_${_idSequence++}';
 
 /// Přidá místo do seznamu. Duplicity hlídá bez ohledu na velikost písmen
 /// a diakritiku, takže "Kotelna" a "KOTELNA" nevzniknou dvakrát.
@@ -391,7 +400,9 @@ class Finding {
     required this.timestamp,
   });
 
-  Map<String, dynamic> toJson() => {
+  /// `includePhotoBytes: false` nechá snímek mimo JSON – používá se, když
+  /// fotky leží v samostatném úložišti (viz `initPhotoStore`).
+  Map<String, dynamic> toJson({bool includePhotoBytes = true}) => {
         'id': id,
         'orderNumber': orderNumber,
         'category': category,
@@ -400,7 +411,7 @@ class Finding {
         'legislation': legislation,
         'locationDetail': locationDetail,
         'isPhotoTaken': isPhotoTaken,
-        'photoBytes': photoBytes != null ? base64Encode(photoBytes!) : null,
+        if (includePhotoBytes) 'photoBytes': photoBytes != null ? base64Encode(photoBytes!) : null,
         'timestamp': timestamp.toIso8601String(),
       };
 
@@ -439,14 +450,14 @@ class InspectionReport {
     this.gpsCoords,
   });
 
-  Map<String, dynamic> toJson() => {
+  Map<String, dynamic> toJson({bool includePhotoBytes = true}) => {
         'id': id,
         'companyName': companyName,
         'companyIco': companyIco,
         'companyAddress': companyAddress,
         'locationName': locationName,
         'date': date.toIso8601String(),
-        'findings': findings.map((f) => f.toJson()).toList(),
+        'findings': findings.map((f) => f.toJson(includePhotoBytes: includePhotoBytes)).toList(),
         'gpsCoords': gpsCoords,
       };
 
@@ -676,6 +687,13 @@ Future<void> loadPersistedData() async {
       savedReports = decoded
           .map((e) => InspectionReport.fromJson(e as Map<String, dynamic>))
           .toList();
+      _attachPhotosFromStore();
+
+      // Reporty od starší verze mají fotky přímo v JSONu – přesuneme je do
+      // samostatného úložiště hned, ať se uvolní místo v shared_preferences.
+      if (isPhotoStoreReady && reportsJson.contains('"photoBytes":"')) {
+        await persistReports();
+      }
     }
 
     final companiesJson = prefs.getString(_kCompaniesKey);
@@ -709,8 +727,13 @@ Future<void> persistLegislation() async {
 
 Future<void> persistReports() async {
   try {
+    // Fotky nejdřív do samostatného úložiště, do JSONu pak jdou jen texty.
+    await _syncPhotosToStore();
+
     final prefs = await SharedPreferences.getInstance();
-    final encoded = jsonEncode(savedReports.map((r) => r.toJson()).toList());
+    final encoded = jsonEncode(
+      savedReports.map((r) => r.toJson(includePhotoBytes: !isPhotoStoreReady)).toList(),
+    );
     await prefs.setString(_kReportsKey, encoded);
   } catch (e) {
     debugPrint('Nepodařilo se uložit reporty: $e');
@@ -724,6 +747,88 @@ Future<void> persistCompanies() async {
     await prefs.setString(_kCompaniesKey, encoded);
   } catch (e) {
     debugPrint('Nepodařilo se uložit firmy: $e');
+  }
+}
+
+// -----------------------------------------------------------------------------
+// ÚLOŽIŠTĚ FOTOGRAFIÍ
+//
+// Fotky se dřív ukládaly zakódované přímo do JSONu reportů v shared_preferences.
+// Na webu to znamená localStorage se stropem kolem 5 MB, do kterého se vejde
+// jen pár desítek fotek – po jeho vyčerpání se report neuloží. Snímky proto
+// leží zvlášť: na webu v IndexedDB (stovky MB), na mobilu v souboru.
+//
+// Když se úložiště nepodaří otevřít, aplikace se vrátí k původnímu chování
+// (fotky v JSONu), aby zůstala funkční i tak.
+// -----------------------------------------------------------------------------
+const String _kPhotoBoxName = 'ekodav_photos_v1';
+
+Box<Uint8List>? _photoBox;
+
+/// Je samostatné úložiště fotografií k dispozici?
+bool get isPhotoStoreReady => _photoBox != null;
+
+Future<void> initPhotoStore() async {
+  try {
+    await Hive.initFlutter();
+    _photoBox = await Hive.openBox<Uint8List>(_kPhotoBoxName);
+  } catch (e) {
+    _photoBox = null;
+    debugPrint('Samostatné úložiště fotografií není k dispozici, fotky zůstanou v JSONu: $e');
+  }
+}
+
+/// Kolik místa fotky zabírají a kolik jich je – podklad pro informaci
+/// o zaplnění úložiště.
+({int count, int bytes}) photoStorageUsage() {
+  final box = _photoBox;
+  if (box == null) return (count: 0, bytes: 0);
+
+  int total = 0;
+  for (final key in box.keys) {
+    total += box.get(key)?.lengthInBytes ?? 0;
+  }
+  return (count: box.length, bytes: total);
+}
+
+/// Zapíše fotky uložených reportů do samostatného úložiště a zahodí snímky,
+/// na které už žádný report neodkazuje.
+Future<void> _syncPhotosToStore() async {
+  final box = _photoBox;
+  if (box == null) return;
+
+  final Set<String> referenced = {};
+  for (final report in savedReports) {
+    for (final finding in report.findings) {
+      if (finding.photoBytes != null) {
+        referenced.add(finding.id);
+        await box.put(finding.id, finding.photoBytes!);
+      }
+    }
+  }
+
+  for (final key in box.keys.toList()) {
+    if (!referenced.contains(key)) await box.delete(key);
+  }
+}
+
+/// Doplní k načteným reportům fotky ze samostatného úložiště. Reporty uložené
+/// starší verzí mají snímky přímo v JSONu – ty se sem přesunou při nejbližším
+/// uložení.
+void _attachPhotosFromStore() {
+  final box = _photoBox;
+  if (box == null) return;
+
+  for (final report in savedReports) {
+    for (final finding in report.findings) {
+      if (finding.photoBytes == null) {
+        final bytes = box.get(finding.id);
+        if (bytes != null) {
+          finding.photoBytes = bytes;
+          finding.isPhotoTaken = true;
+        }
+      }
+    }
   }
 }
 
@@ -2908,7 +3013,7 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
         _statusMessage = '⚡ Nález #${existing.orderNumber} aktualizován!$matchLabel';
       } else {
         final newFinding = Finding(
-          id: DateTime.now().millisecondsSinceEpoch.toString(),
+          id: newEntityId(),
           orderNumber: globalFindings.length + 1,
           category: _selectedCategory,
           severity: _selectedSeverity,
@@ -2955,7 +3060,7 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
   void _finishInspection() {
     if (globalFindings.isNotEmpty) {
       final report = InspectionReport(
-        id: DateTime.now().millisecondsSinceEpoch.toString(),
+        id: newEntityId(),
         companyName: widget.companyName,
         companyIco: widget.companyIco,
         companyAddress: widget.companyAddress,
@@ -3292,6 +3397,49 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
   }
 }
 
+/// Informace o tom, kolik místa zabírají uložené fotografie. Dřív se snímky
+/// vešly jen do ~5 MB v shared_preferences, proto je užitečné mít zaplnění
+/// na očích.
+class _PhotoStorageBar extends StatelessWidget {
+  const _PhotoStorageBar();
+
+  @override
+  Widget build(BuildContext context) {
+    final usage = photoStorageUsage();
+    final String sizeLabel = usage.bytes < 1024 * 1024
+        ? '${(usage.bytes / 1024).toStringAsFixed(0)} kB'
+        : '${(usage.bytes / 1024 / 1024).toStringAsFixed(1)} MB';
+
+    return SafeArea(
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+        color: Colors.grey[100],
+        child: Row(
+          children: [
+            Icon(
+              isPhotoStoreReady ? Icons.sd_storage : Icons.warning_amber,
+              size: 16,
+              color: isPhotoStoreReady ? Colors.grey[600] : Colors.orange[800],
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                isPhotoStoreReady
+                    ? 'Fotografie v úložišti: ${usage.count} ks • $sizeLabel'
+                    : 'Náhradní režim úložiště – fotografie se ukládají do omezeného prostoru (~5 MB).',
+                style: TextStyle(
+                  fontSize: 11,
+                  color: isPhotoStoreReady ? Colors.grey[700] : Colors.orange[900],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class ReportsHistoryScreen extends StatelessWidget {
   const ReportsHistoryScreen({Key? key}) : super(key: key);
 
@@ -3299,6 +3447,7 @@ class ReportsHistoryScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('Historie inspekčních reportů')),
+      bottomNavigationBar: const _PhotoStorageBar(),
       body: savedReports.isEmpty
           ? const Center(
               child: Text('Zatím nebyly dokončeny žádné reporty.', style: TextStyle(color: Colors.grey)),

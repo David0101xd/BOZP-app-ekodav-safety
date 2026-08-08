@@ -434,6 +434,64 @@ class ActiveReportContext {
 
 ActiveReportContext currentReportContext = ActiveReportContext();
 
+/// Uložená firma pro rychlý výběr přes tlačítko "Vybrat z mých firem"
+/// na obrazovce Zadání lokace & historie.
+class SavedCompany {
+  final String id;
+  String name;
+  String ico;
+  String address;
+
+  SavedCompany({
+    required this.id,
+    required this.name,
+    this.ico = '',
+    this.address = '',
+  });
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'name': name,
+        'ico': ico,
+        'address': address,
+      };
+
+  factory SavedCompany.fromJson(Map<String, dynamic> json) => SavedCompany(
+        id: json['id'] as String,
+        name: json['name'] as String? ?? '',
+        ico: json['ico'] as String? ?? '',
+        address: json['address'] as String? ?? '',
+      );
+}
+
+List<SavedCompany> savedCompanies = [];
+
+/// Uloží/aktualizuje firmu v seznamu "mých firem" – páruje podle IČO,
+/// pokud je vyplněné, jinak podle (diakriticky nezávislého) názvu.
+void upsertSavedCompany({required String name, String ico = '', String address = ''}) {
+  final String trimmedName = name.trim();
+  if (trimmedName.isEmpty) return;
+  final String normalizedIco = ico.trim();
+
+  final int idx = savedCompanies.indexWhere((c) =>
+      (normalizedIco.isNotEmpty && c.ico == normalizedIco) ||
+      (normalizedIco.isEmpty && _normalizeForMatch(c.name) == _normalizeForMatch(trimmedName)));
+
+  if (idx >= 0) {
+    savedCompanies[idx].name = trimmedName;
+    if (normalizedIco.isNotEmpty) savedCompanies[idx].ico = normalizedIco;
+    if (address.trim().isNotEmpty) savedCompanies[idx].address = address.trim();
+  } else {
+    savedCompanies.add(SavedCompany(
+      id: DateTime.now().millisecondsSinceEpoch.toString(),
+      name: trimmedName,
+      ico: normalizedIco,
+      address: address.trim(),
+    ));
+  }
+  persistCompanies();
+}
+
 List<Finding> globalFindings = [];
 List<InspectionReport> savedReports = [
   InspectionReport(
@@ -464,6 +522,7 @@ List<InspectionReport> savedReports = [
 // -----------------------------------------------------------------------------
 const String _kLegislationKey = 'ekodav_legislation_v1';
 const String _kReportsKey = 'ekodav_reports_v1';
+const String _kCompaniesKey = 'ekodav_companies_v1';
 
 Future<void> loadPersistedData() async {
   try {
@@ -482,6 +541,14 @@ Future<void> loadPersistedData() async {
       final decoded = jsonDecode(reportsJson) as List;
       savedReports = decoded
           .map((e) => InspectionReport.fromJson(e as Map<String, dynamic>))
+          .toList();
+    }
+
+    final companiesJson = prefs.getString(_kCompaniesKey);
+    if (companiesJson != null) {
+      final decoded = jsonDecode(companiesJson) as List;
+      savedCompanies = decoded
+          .map((e) => SavedCompany.fromJson(e as Map<String, dynamic>))
           .toList();
     }
   } catch (e) {
@@ -506,6 +573,16 @@ Future<void> persistReports() async {
     await prefs.setString(_kReportsKey, encoded);
   } catch (e) {
     debugPrint('Nepodařilo se uložit reporty: $e');
+  }
+}
+
+Future<void> persistCompanies() async {
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    final encoded = jsonEncode(savedCompanies.map((c) => c.toJson()).toList());
+    await prefs.setString(_kCompaniesKey, encoded);
+  } catch (e) {
+    debugPrint('Nepodařilo se uložit firmy: $e');
   }
 }
 
@@ -932,6 +1009,7 @@ class _NewReportScreenState extends State<NewReportScreen> {
   final TextEditingController _locationController = TextEditingController();
   String? _gpsCoords;
   bool _isLoadingAres = false;
+  bool _isLoadingAresName = false;
   bool _isLoadingGps = false;
 
   Set<String> get _recentLocationChips {
@@ -993,6 +1071,111 @@ class _NewReportScreenState extends State<NewReportScreen> {
     }
   }
 
+  /// Rozloží pole "sidlo" z odpovědi ARES na jednotlivé části adresy a na
+  /// jeden souhrnný řádek použitelný do pole "Sídlo / Adresa".
+  Map<String, String> _parseAresSidlo(Map<String, dynamic>? sidlo) {
+    String street = '';
+    String houseNumber = '';
+    String city = '';
+    String zip = '';
+
+    if (sidlo != null) {
+      street = sidlo['nazevUlice']?.toString() ?? '';
+      if (street.isEmpty) {
+        street = sidlo['nazevCastiObce']?.toString() ?? sidlo['nazevObce']?.toString() ?? '';
+      }
+
+      final cisloDomovni = sidlo['cisloDomovni'];
+      final cisloOrientacni = sidlo['cisloOrientacni'];
+      final cisloOrientacniPismeno = sidlo['cisloOrientacniPismeno'];
+
+      if (cisloDomovni != null && cisloOrientacni != null) {
+        houseNumber = '$cisloDomovni/$cisloOrientacni';
+      } else if (cisloDomovni != null) {
+        houseNumber = '$cisloDomovni';
+      } else if (cisloOrientacni != null) {
+        houseNumber = '$cisloOrientacni';
+      }
+
+      if (cisloOrientacniPismeno != null && cisloOrientacniPismeno.toString().isNotEmpty) {
+        houseNumber += cisloOrientacniPismeno.toString();
+      }
+
+      final String nazevObce = sidlo['nazevObce']?.toString() ?? '';
+      final String nazevCastiObce = sidlo['nazevCastiObce']?.toString() ?? '';
+      if (nazevObce.isNotEmpty && nazevCastiObce.isNotEmpty && nazevObce != nazevCastiObce) {
+        city = '$nazevObce - $nazevCastiObce';
+      } else {
+        city = nazevObce.isNotEmpty ? nazevObce : nazevCastiObce;
+      }
+
+      final pscVal = sidlo['psc'];
+      if (pscVal != null) {
+        final String rawZip = pscVal.toString().replaceAll(RegExp(r'\s+'), '');
+        if (rawZip.length == 5) {
+          zip = '${rawZip.substring(0, 3)} ${rawZip.substring(3)}';
+        } else {
+          zip = rawZip;
+        }
+      }
+    }
+
+    final List<String> addressParts = [];
+    if (street.isNotEmpty) {
+      addressParts.add(houseNumber.isNotEmpty ? '$street $houseNumber' : street);
+    } else if (houseNumber.isNotEmpty) {
+      addressParts.add(houseNumber);
+    }
+    final String cityAndZip = [zip, city].where((s) => s.isNotEmpty).join(' ');
+    if (cityAndZip.isNotEmpty) addressParts.add(cityAndZip);
+
+    return {
+      'street': street,
+      'houseNumber': houseNumber,
+      'city': city,
+      'zip': zip,
+      'full': addressParts.join(', '),
+    };
+  }
+
+  /// Vyplní formulář daty jednoho ARES subjektu a rovnou ho uloží mezi
+  /// "mé firmy" pro příští rychlý výběr.
+  void _applyAresSubject(Map<String, dynamic> data) {
+    final String companyName = (data['obchodniJmeno'] ?? '') as String;
+    final String actualIco = (data['ico'] ?? '') as String;
+    final Map<String, String> address = _parseAresSidlo(data['sidlo'] as Map<String, dynamic>?);
+
+    setState(() {
+      if (companyName.isNotEmpty) _companyController.text = companyName;
+      if (actualIco.isNotEmpty) _icoController.text = actualIco;
+      _addressController.text = address['full'] ?? '';
+    });
+
+    upsertSavedCompany(
+      name: _companyController.text,
+      ico: _icoController.text,
+      address: _addressController.text,
+    );
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            '✅ Načteno z ARES:\n'
+            'Firma: $companyName\n'
+            'IČO: $actualIco\n'
+            'Ulice: ${address['street']}\n'
+            'Č. p.: ${address['houseNumber']}\n'
+            'Město: ${address['city']}\n'
+            'PSČ: ${address['zip']}',
+          ),
+          backgroundColor: Colors.green,
+          duration: const Duration(seconds: 4),
+        ),
+      );
+    }
+  }
+
   Future<void> _fetchAresData(String ico) async {
     final cleanIco = ico.replaceAll(RegExp(r'\s+'), '');
     if (cleanIco.isEmpty) {
@@ -1007,110 +1190,25 @@ class _NewReportScreenState extends State<NewReportScreen> {
     });
 
     try {
-      final url = Uri.parse('https://ares.gov.cz/ares/nesstar/v1/ekonomicke-subjekty/$cleanIco');
+      final url = Uri.parse('https://ares.gov.cz/ekonomicke-subjekty-v-be/rest/ekonomicke-subjekty/$cleanIco');
       final response = await http.get(url, headers: {
         'Accept': 'application/json',
       });
 
       if (response.statusCode == 200) {
-        final data = jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
-        
-        final String companyName = (data['obchodniJmeno'] ?? '') as String;
-        final String actualIco = (data['ico'] ?? cleanIco) as String;
-        
-        final Map<String, dynamic>? sidlo = data['sidlo'] as Map<String, dynamic>?;
-        String street = '';
-        String houseNumber = '';
-        String city = '';
-        String zip = '';
-
-        if (sidlo != null) {
-          street = sidlo['nazevUlice']?.toString() ?? '';
-          if (street.isEmpty) {
-            street = sidlo['nazevCastiObce']?.toString() ?? sidlo['nazevObce']?.toString() ?? '';
-          }
-
-          final cisloDomovni = sidlo['cisloDomovni'];
-          final cisloOrientacni = sidlo['cisloOrientacni'];
-          final cisloOrientacniPismeno = sidlo['cisloOrientacniPismeno'];
-
-          if (cisloDomovni != null && cisloOrientacni != null) {
-            houseNumber = '$cisloDomovni/$cisloOrientacni';
-          } else if (cisloDomovni != null) {
-            houseNumber = '$cisloDomovni';
-          } else if (cisloOrientacni != null) {
-            houseNumber = '$cisloOrientacni';
-          }
-
-          if (cisloOrientacniPismeno != null && cisloOrientacniPismeno.toString().isNotEmpty) {
-            houseNumber += cisloOrientacniPismeno.toString();
-          }
-
-          final String nazevObce = sidlo['nazevObce']?.toString() ?? '';
-          final String nazevCastiObce = sidlo['nazevCastiObce']?.toString() ?? '';
-          if (nazevObce.isNotEmpty && nazevCastiObce.isNotEmpty && nazevObce != nazevCastiObce) {
-            city = '$nazevObce - $nazevCastiObce';
-          } else {
-            city = nazevObce.isNotEmpty ? nazevObce : nazevCastiObce;
-          }
-
-          final pscVal = sidlo['psc'];
-          if (pscVal != null) {
-            final String rawZip = pscVal.toString().replaceAll(RegExp(r'\s+'), '');
-            if (rawZip.length == 5) {
-              zip = '${rawZip.substring(0, 3)} ${rawZip.substring(3)}';
-            } else {
-              zip = rawZip;
-            }
-          }
-        }
-
-        setState(() {
-          if (companyName.isNotEmpty) {
-            _companyController.text = companyName;
-          }
-          if (actualIco.isNotEmpty) {
-            _icoController.text = actualIco;
-          }
-          
-          final List<String> addressParts = [];
-          if (street.isNotEmpty) {
-            if (houseNumber.isNotEmpty) {
-              addressParts.add('$street $houseNumber');
-            } else {
-              addressParts.add(street);
-            }
-          } else if (houseNumber.isNotEmpty) {
-            addressParts.add(houseNumber);
-          }
-          
-          final String cityAndZip = [zip, city].where((s) => s.isNotEmpty).join(' ');
-          if (cityAndZip.isNotEmpty) {
-            addressParts.add(cityAndZip);
-          }
-          
-          _addressController.text = addressParts.join(', ');
-        });
-
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(
-                '✅ Načteno z ARES:\n'
-                'Firma: $companyName\n'
-                'IČO: $actualIco\n'
-                'Ulice: $street\n'
-                'Č. p.: $houseNumber\n'
-                'Město: $city\n'
-                'PSČ: $zip',
-              ),
-              backgroundColor: Colors.green,
-              duration: const Duration(seconds: 4),
-            ),
-          );
-        }
+        _applyAresSubject(jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>);
       } else if (response.statusCode == 404) {
-        if (mounted) {
+        // Přesné IČO nesedí – jako záchranu zkusíme vyhledat podle
+        // (částečného) názvu firmy, pokud je vyplněný.
+        final String nameQuery = _companyController.text.trim();
+        if (nameQuery.isNotEmpty) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('ℹ️ Subjekt s IČO $cleanIco nenalezen, zkouším hledat podle názvu "$nameQuery"…')),
+            );
+          }
+          await _searchAresByNameAndPick(nameQuery);
+        } else if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(content: Text('❌ Subjekt s tímto IČO nebyl v ARES nalezen.'), backgroundColor: Colors.red),
           );
@@ -1137,11 +1235,207 @@ class _NewReportScreenState extends State<NewReportScreen> {
     }
   }
 
+  /// Vyhledá subjekty v ARES podle (i částečného) názvu firmy. Při jediném
+  /// výsledku ho rovnou použije, při více nabídne výběr podobných subjektů.
+  Future<void> _searchAresByNameAndPick(String name) async {
+    final String query = name.trim();
+    if (query.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('⚠️ Vyplňte prosím název firmy.'), backgroundColor: Colors.red),
+        );
+      }
+      return;
+    }
+
+    setState(() {
+      _isLoadingAresName = true;
+    });
+
+    try {
+      final url = Uri.parse('https://ares.gov.cz/ekonomicke-subjekty-v-be/rest/ekonomicke-subjekty/vyhledat');
+      final response = await http.post(
+        url,
+        headers: {'Accept': 'application/json', 'Content-Type': 'application/json'},
+        body: jsonEncode({'obchodniJmeno': query, 'pocet': 15, 'start': 0}),
+      );
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
+        final List<Map<String, dynamic>> results =
+            ((data['ekonomickeSubjekty'] as List?) ?? []).cast<Map<String, dynamic>>();
+
+        if (results.isEmpty) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('❌ V ARES nebyl nalezen žádný subjekt odpovídající "$query".'), backgroundColor: Colors.red),
+            );
+          }
+        } else if (results.length == 1) {
+          _applyAresSubject(results.first);
+        } else if (mounted) {
+          final Map<String, dynamic>? picked = await _showAresResultsPicker(results);
+          if (picked != null) _applyAresSubject(picked);
+        }
+      } else {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('❌ Chyba při hledání v ARES (kód ${response.statusCode}).'), backgroundColor: Colors.red),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('❌ Chyba připojení: $e'), backgroundColor: Colors.red),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoadingAresName = false;
+        });
+      }
+    }
+  }
+
+  Future<Map<String, dynamic>?> _showAresResultsPicker(List<Map<String, dynamic>> results) {
+    return showModalBottomSheet<Map<String, dynamic>>(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+      builder: (ctx) {
+        return DraggableScrollableSheet(
+          initialChildSize: 0.6,
+          minChildSize: 0.3,
+          maxChildSize: 0.9,
+          expand: false,
+          builder: (ctx, scrollController) {
+            return Column(
+              children: [
+                const Padding(
+                  padding: EdgeInsets.all(16.0),
+                  child: Text('Podobné subjekty v ARES', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                ),
+                Expanded(
+                  child: ListView.separated(
+                    controller: scrollController,
+                    itemCount: results.length,
+                    separatorBuilder: (_, __) => const Divider(height: 1),
+                    itemBuilder: (ctx, i) {
+                      final subject = results[i];
+                      final String name = (subject['obchodniJmeno'] ?? '') as String;
+                      final String ico = (subject['ico'] ?? '') as String;
+                      final String address = _parseAresSidlo(subject['sidlo'] as Map<String, dynamic>?)['full'] ?? '';
+                      return ListTile(
+                        leading: const Icon(Icons.business, color: Color(0xFF0284C7)),
+                        title: Text(name, style: const TextStyle(fontWeight: FontWeight.bold)),
+                        subtitle: Text('IČO: $ico${address.isNotEmpty ? ' • $address' : ''}'),
+                        onTap: () => Navigator.pop(ctx, subject),
+                      );
+                    },
+                  ),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Future<void> _pickFromSavedCompanies() async {
+    if (savedCompanies.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('ℹ️ Zatím nemáte žádné uložené firmy.')),
+      );
+      return;
+    }
+
+    final List<SavedCompany> sorted = List.of(savedCompanies)
+      ..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+
+    final SavedCompany? picked = await showModalBottomSheet<SavedCompany>(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setSheetState) {
+            return DraggableScrollableSheet(
+              initialChildSize: 0.6,
+              minChildSize: 0.3,
+              maxChildSize: 0.9,
+              expand: false,
+              builder: (ctx, scrollController) {
+                return Column(
+                  children: [
+                    const Padding(
+                      padding: EdgeInsets.all(16.0),
+                      child: Text('Vybrat z mých firem', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                    ),
+                    Expanded(
+                      child: sorted.isEmpty
+                          ? const Center(child: Text('Zatím nemáte žádné uložené firmy.'))
+                          : ListView.separated(
+                              controller: scrollController,
+                              itemCount: sorted.length,
+                              separatorBuilder: (_, __) => const Divider(height: 1),
+                              itemBuilder: (ctx, i) {
+                                final company = sorted[i];
+                                return ListTile(
+                                  leading: const Icon(Icons.apartment, color: Color(0xFF0284C7)),
+                                  title: Text(company.name, style: const TextStyle(fontWeight: FontWeight.bold)),
+                                  subtitle: Text([
+                                    if (company.ico.isNotEmpty) 'IČO: ${company.ico}',
+                                    if (company.address.isNotEmpty) company.address,
+                                  ].join(' • ')),
+                                  trailing: IconButton(
+                                    icon: const Icon(Icons.delete_outline, color: Colors.red),
+                                    tooltip: 'Odebrat ze seznamu',
+                                    onPressed: () {
+                                      savedCompanies.removeWhere((c) => c.id == company.id);
+                                      persistCompanies();
+                                      setSheetState(() {
+                                        sorted.removeAt(i);
+                                      });
+                                    },
+                                  ),
+                                  onTap: () => Navigator.pop(ctx, company),
+                                );
+                              },
+                            ),
+                    ),
+                  ],
+                );
+              },
+            );
+          },
+        );
+      },
+    );
+
+    if (picked != null) {
+      setState(() {
+        _companyController.text = picked.name;
+        _icoController.text = picked.ico;
+        _addressController.text = picked.address;
+      });
+    }
+  }
+
   void _startInspection() {
     String loc = _locationController.text.trim();
     String comp = _companyController.text.trim();
     if (loc.isEmpty) {
       loc = 'Inspekce BOZP (${DateTime.now().day}.${DateTime.now().month}.${DateTime.now().year})';
+    }
+    if (comp.isNotEmpty) {
+      upsertSavedCompany(
+        name: comp,
+        ico: _icoController.text.trim(),
+        address: _addressController.text.trim(),
+      );
     }
     Navigator.pushReplacement(
       context,
@@ -1165,6 +1459,19 @@ class _NewReportScreenState extends State<NewReportScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            OutlinedButton.icon(
+              icon: const Icon(Icons.folder_shared, color: Color(0xFF0284C7)),
+              label: const Text('VYBRAT Z MÝCH FIREM', style: TextStyle(fontWeight: FontWeight.bold)),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: const Color(0xFF0284C7),
+                side: const BorderSide(color: Color(0xFF0284C7)),
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+              ),
+              onPressed: _pickFromSavedCompanies,
+            ),
+            const SizedBox(height: 16),
+
             const Text('KONTROLOVANÝ SUBJEKT (FIRMA):', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Color(0xFF0284C7))),
             const SizedBox(height: 8),
 
@@ -1175,6 +1482,20 @@ class _NewReportScreenState extends State<NewReportScreen> {
                 hintText: 'např. BENZINA s.r.o.',
                 border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
                 prefixIcon: const Icon(Icons.business, color: Color(0xFF0284C7)),
+                suffixIcon: _isLoadingAresName
+                    ? const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: Padding(
+                          padding: EdgeInsets.all(12.0),
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        ),
+                      )
+                    : IconButton(
+                        icon: const Icon(Icons.search, color: Color(0xFF0284C7)),
+                        tooltip: 'Vyhledat v ARES podle názvu',
+                        onPressed: () => _searchAresByNameAndPick(_companyController.text),
+                      ),
               ),
             ),
             const SizedBox(height: 10),

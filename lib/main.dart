@@ -53,7 +53,49 @@ Future<void> openGoogleMaps(String gpsCoords) async {
   }
 }
 
-Set<String> subLocationHistory = {'Sklad', 'Parkoviště', 'Rampa', 'Dílna', 'Kanceláře', 'Výrobní hala'};
+/// Výchozí nabídka míst nálezu, dokud si uživatel nevytvoří vlastní seznam.
+const List<String> kDefaultSubLocations = [
+  'Sklad', 'Parkoviště', 'Rampa', 'Dílna', 'Kanceláře', 'Výrobní hala',
+];
+
+/// Seznam oblastí / míst nálezu nabízených při zadávání nálezu.
+/// Uživatel si ho spravuje sám (obrazovka "Seznam míst / oblastí").
+Set<String> subLocationHistory = {...kDefaultSubLocations};
+
+/// Přidá místo do seznamu. Duplicity hlídá bez ohledu na velikost písmen
+/// a diakritiku, takže "Kotelna" a "KOTELNA" nevzniknou dvakrát.
+/// Vrací `true`, pokud šlo o nové místo.
+bool addSubLocation(String name) {
+  final String trimmed = name.trim();
+  if (trimmed.isEmpty) return false;
+
+  final String normalized = _normalizeForMatch(trimmed);
+  if (subLocationHistory.any((p) => _normalizeForMatch(p) == normalized)) return false;
+
+  subLocationHistory.add(trimmed);
+  return true;
+}
+
+/// Rozdělí hromadně vložený text na jednotlivá místa. Bere jako oddělovač
+/// nový řádek, středník i čárku, aby šlo vložit seznam z tabulky i z e-mailu.
+List<String> parseSubLocationList(String raw) {
+  return raw
+      .split(RegExp(r'[\n;,]'))
+      .map((s) => s.trim())
+      .where((s) => s.isNotEmpty)
+      .toList();
+}
+
+/// Hromadně přidá místa ze vloženého textu. Vrací počet skutečně přidaných
+/// položek (duplicity přeskočí).
+int addSubLocationsFromText(String raw) {
+  int added = 0;
+  for (final place in parseSubLocationList(raw)) {
+    if (addSubLocation(place)) added++;
+  }
+  if (added > 0) persistSubLocations();
+  return added;
+}
 
 // -----------------------------------------------------------------------------
 // DATOVÝ MODEL PRO LEGISLATIVNÍ PRAVIDLA
@@ -614,6 +656,7 @@ List<InspectionReport> savedReports = [
 const String _kLegislationKey = 'ekodav_legislation_v1';
 const String _kReportsKey = 'ekodav_reports_v1';
 const String _kCompaniesKey = 'ekodav_companies_v1';
+const String _kSubLocationsKey = 'ekodav_sublocations_v1';
 
 Future<void> loadPersistedData() async {
   try {
@@ -641,6 +684,13 @@ Future<void> loadPersistedData() async {
       savedCompanies = decoded
           .map((e) => SavedCompany.fromJson(e as Map<String, dynamic>))
           .toList();
+    }
+
+    // Vlastní seznam míst má přednost před výchozí nabídkou – i když si ho
+    // uživatel celý vymaže, výchozí položky se znovu neobjeví.
+    final subLocations = prefs.getStringList(_kSubLocationsKey);
+    if (subLocations != null) {
+      subLocationHistory = subLocations.toSet();
     }
   } catch (e) {
     debugPrint('Nepodařilo se načíst uložená data: $e');
@@ -674,6 +724,15 @@ Future<void> persistCompanies() async {
     await prefs.setString(_kCompaniesKey, encoded);
   } catch (e) {
     debugPrint('Nepodařilo se uložit firmy: $e');
+  }
+}
+
+Future<void> persistSubLocations() async {
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList(_kSubLocationsKey, subLocationHistory.toList());
+  } catch (e) {
+    debugPrint('Nepodařilo se uložit seznam míst: $e');
   }
 }
 
@@ -1681,6 +1740,321 @@ class _CompanyManagerScreenState extends State<CompanyManagerScreen> {
 }
 
 // -----------------------------------------------------------------------------
+// SEZNAM MÍST / OBLASTÍ PRO ZADÁVÁNÍ NÁLEZŮ
+// -----------------------------------------------------------------------------
+class SubLocationManagerScreen extends StatefulWidget {
+  const SubLocationManagerScreen({Key? key}) : super(key: key);
+
+  @override
+  State<SubLocationManagerScreen> createState() => _SubLocationManagerScreenState();
+}
+
+class _SubLocationManagerScreenState extends State<SubLocationManagerScreen> {
+  final TextEditingController _newPlaceController = TextEditingController();
+
+  @override
+  void dispose() {
+    _newPlaceController.dispose();
+    super.dispose();
+  }
+
+  void _addSingle() {
+    final String name = _newPlaceController.text.trim();
+    if (name.isEmpty) return;
+
+    final bool added = addSubLocation(name);
+    if (added) persistSubLocations();
+
+    setState(() => _newPlaceController.clear());
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(added ? '✅ Přidáno: $name' : 'ℹ️ "$name" už v seznamu je.'),
+        backgroundColor: added ? Colors.green : null,
+      ),
+    );
+  }
+
+  void _showBulkAddDialog() {
+    final bulkController = TextEditingController();
+
+    showDialog(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text('📋 Nahrát seznam míst', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Vložte více míst najednou – každé na samostatný řádek '
+                '(oddělit lze i čárkou nebo středníkem). Položky, které už '
+                'v seznamu jsou, se přeskočí.',
+                style: TextStyle(fontSize: 12, color: Colors.grey),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: bulkController,
+                maxLines: 10,
+                autofocus: true,
+                decoration: InputDecoration(
+                  hintText: 'Podlaha č. 1\nVýrobna\nKotelna\nSklad materiálu',
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Zrušit'),
+          ),
+          ElevatedButton.icon(
+            icon: const Icon(Icons.playlist_add),
+            label: const Text('PŘIDAT VŠE'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF0284C7),
+              foregroundColor: Colors.white,
+            ),
+            onPressed: () {
+              final int found = parseSubLocationList(bulkController.text).length;
+              final int added = addSubLocationsFromText(bulkController.text);
+              Navigator.pop(dialogContext);
+
+              setState(() {});
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text(
+                    added == 0
+                        ? 'ℹ️ Nic nového nepřibylo (nalezeno $found položek, všechny už v seznamu jsou).'
+                        : '✅ Přidáno $added z $found položek.',
+                  ),
+                  backgroundColor: added > 0 ? Colors.green : null,
+                ),
+              );
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showRenameDialog(String original) {
+    final renameController = TextEditingController(text: original);
+
+    showDialog(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text('✏️ Přejmenovat místo', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+        content: TextField(
+          controller: renameController,
+          autofocus: true,
+          decoration: InputDecoration(
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Zrušit'),
+          ),
+          ElevatedButton.icon(
+            icon: const Icon(Icons.save),
+            label: const Text('ULOŽIT'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF0284C7),
+              foregroundColor: Colors.white,
+            ),
+            onPressed: () {
+              final String updated = renameController.text.trim();
+              if (updated.isEmpty) return;
+
+              setState(() {
+                // Zachová pořadí položky v seznamu.
+                final List<String> items = subLocationHistory.toList();
+                final int idx = items.indexOf(original);
+                if (idx >= 0) items[idx] = updated;
+                subLocationHistory = items.toSet();
+              });
+              persistSubLocations();
+              Navigator.pop(dialogContext);
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final List<String> places = subLocationHistory.toList();
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Seznam míst / oblastí'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.settings_backup_restore),
+            tooltip: 'Obnovit výchozí nabídku',
+            onPressed: () async {
+              final bool? confirmed = await showDialog<bool>(
+                context: context,
+                builder: (ctx) => AlertDialog(
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                  title: const Text('Obnovit výchozí?', style: TextStyle(fontWeight: FontWeight.bold)),
+                  content: const Text(
+                    'Do seznamu se doplní výchozí místa (Sklad, Parkoviště, Rampa, '
+                    'Dílna, Kanceláře, Výrobní hala). Vaše vlastní položky zůstanou zachovány.',
+                  ),
+                  actions: [
+                    TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Zrušit')),
+                    ElevatedButton(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF0284C7),
+                        foregroundColor: Colors.white,
+                      ),
+                      onPressed: () => Navigator.pop(ctx, true),
+                      child: const Text('OBNOVIT'),
+                    ),
+                  ],
+                ),
+              );
+              if (confirmed != true) return;
+
+              setState(() {
+                for (final place in kDefaultSubLocations) {
+                  addSubLocation(place);
+                }
+              });
+              persistSubLocations();
+            },
+          ),
+        ],
+      ),
+      floatingActionButton: FloatingActionButton.extended(
+        icon: const Icon(Icons.playlist_add),
+        label: const Text('NAHRÁT SEZNAM'),
+        backgroundColor: const Color(0xFF0284C7),
+        foregroundColor: Colors.white,
+        onPressed: _showBulkAddDialog,
+      ),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 90),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.blue[50],
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: Colors.blue[200]!),
+              ),
+              child: const Row(
+                children: [
+                  Icon(Icons.info_outline, color: Color(0xFF0284C7)),
+                  SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      'Tato místa se nabízejí jako tlačítka u pole "Místo / Upřesnění '
+                      'lokace nálezu". Přidejte si vlastní oblasti, např. Podlaha č. 1, '
+                      'Výrobna, Kotelna – stačí je pak při nálezu ťuknout.',
+                      style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _newPlaceController,
+                    textInputAction: TextInputAction.done,
+                    onSubmitted: (_) => _addSingle(),
+                    decoration: InputDecoration(
+                      labelText: 'Nové místo / oblast',
+                      hintText: 'např. Kotelna',
+                      prefixIcon: const Icon(Icons.place, color: Color(0xFF0284C7)),
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF0284C7),
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 18),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  ),
+                  onPressed: _addSingle,
+                  child: const Icon(Icons.add),
+                ),
+              ],
+            ),
+            const SizedBox(height: 20),
+
+            Text(
+              'MÍSTA V SEZNAMU (${places.length}):',
+              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Color(0xFF0F172A)),
+            ),
+            const SizedBox(height: 8),
+
+            if (places.isEmpty)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 30.0),
+                child: Text(
+                  'Seznam je prázdný.\nPřidejte místa jednotlivě, nebo jich vložte víc\nnajednou přes "NAHRÁT SEZNAM".',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Colors.grey),
+                ),
+              )
+            else
+              ListView.separated(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                itemCount: places.length,
+                separatorBuilder: (_, __) => const Divider(height: 1),
+                itemBuilder: (context, index) {
+                  final place = places[index];
+                  return ListTile(
+                    leading: const Icon(Icons.place, color: Color(0xFF0284C7)),
+                    title: Text(place, style: const TextStyle(fontWeight: FontWeight.w600)),
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        IconButton(
+                          icon: const Icon(Icons.edit, color: Colors.blue, size: 20),
+                          tooltip: 'Přejmenovat',
+                          onPressed: () => _showRenameDialog(place),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.delete, color: Colors.red, size: 20),
+                          tooltip: 'Odebrat ze seznamu',
+                          onPressed: () {
+                            setState(() => subLocationHistory.remove(place));
+                            persistSubLocations();
+                          },
+                        ),
+                      ],
+                    ),
+                  );
+                },
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// -----------------------------------------------------------------------------
 // 2. ZADÁNÍ LOKACE, FIRMY & HISTORIE
 // -----------------------------------------------------------------------------
 class NewReportScreen extends StatefulWidget {
@@ -2510,8 +2884,9 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
     setState(() {
       final placeText = _placeController.text.trim();
 
-      if (placeText.isNotEmpty) {
-        subLocationHistory.add(placeText);
+      // Nově zadané místo si rovnou zapamatujeme do seznamu nabídek.
+      if (placeText.isNotEmpty && addSubLocation(placeText)) {
+        persistSubLocations();
       }
 
       final noteText = _noteController.text.isEmpty ? 'Nález bez poznámky' : _noteController.text;
@@ -2709,7 +3084,24 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
             ),
             const SizedBox(height: 14),
 
-            const Text('Místo / Upřesnění lokace nálezu:', style: TextStyle(fontWeight: FontWeight.bold)),
+            Row(
+              children: [
+                const Expanded(
+                  child: Text('Místo / Upřesnění lokace nálezu:', style: TextStyle(fontWeight: FontWeight.bold)),
+                ),
+                TextButton.icon(
+                  icon: const Icon(Icons.playlist_add, size: 18),
+                  label: const Text('Upravit seznam', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                  onPressed: () async {
+                    await Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (context) => const SubLocationManagerScreen()),
+                    );
+                    setState(() {});
+                  },
+                ),
+              ],
+            ),
             const SizedBox(height: 4),
             TextField(
               controller: _placeController,
@@ -2721,22 +3113,37 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
               ),
             ),
             const SizedBox(height: 6),
-            Wrap(
-              spacing: 6,
-              runSpacing: 4,
-              children: subLocationHistory.map((place) {
-                return ActionChip(
-                  avatar: const Icon(Icons.history, size: 14, color: Color(0xFF0284C7)),
-                  label: Text(place, style: const TextStyle(fontSize: 12)),
-                  backgroundColor: Colors.blue[50],
-                  onPressed: () {
-                    setState(() {
-                      _placeController.text = place;
-                    });
-                  },
-                );
-              }).toList(),
-            ),
+            if (subLocationHistory.isEmpty)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 6.0),
+                child: Text(
+                  'Seznam míst je prázdný – naplňte si ho přes "Upravit seznam".',
+                  style: TextStyle(fontSize: 11, color: Colors.grey),
+                ),
+              )
+            else
+              // Delší vlastní seznamy se roluji, aby neodtlačily zbytek formuláře.
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxHeight: 140),
+                child: SingleChildScrollView(
+                  child: Wrap(
+                    spacing: 6,
+                    runSpacing: 4,
+                    children: subLocationHistory.map((place) {
+                      return ActionChip(
+                        avatar: const Icon(Icons.place, size: 14, color: Color(0xFF0284C7)),
+                        label: Text(place, style: const TextStyle(fontSize: 12)),
+                        backgroundColor: Colors.blue[50],
+                        onPressed: () {
+                          setState(() {
+                            _placeController.text = place;
+                          });
+                        },
+                      );
+                    }).toList(),
+                  ),
+                ),
+              ),
             const SizedBox(height: 14),
 
             const Text('2. Kategorie:', style: TextStyle(fontWeight: FontWeight.bold)),

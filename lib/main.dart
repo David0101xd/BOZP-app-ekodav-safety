@@ -1707,8 +1707,12 @@ class _NewReportScreenState extends State<NewReportScreen> {
       } else if (response.statusCode == 404) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('❌ Subjekt s tímto IČO nebyl v ARES nalezen.'), backgroundColor: Colors.red),
+            const SnackBar(content: Text('❌ Subjekt s tímto IČO nebyl v ARES nalezen. Zkouším hledat podle názvu…'), backgroundColor: Colors.orange),
           );
+        }
+        final nameGuess = _companyController.text.trim();
+        if (nameGuess.isNotEmpty) {
+          await _searchByCompanyName(nameGuess);
         }
       } else {
         if (mounted) {
@@ -1732,6 +1736,93 @@ class _NewReportScreenState extends State<NewReportScreen> {
         setState(() {
           _isLoadingAres = false;
         });
+      }
+    }
+  }
+
+  /// Vyhledá firmy v ARES podle (i částečného) názvu a nabídne uživateli
+  /// seznam podobných subjektů k výběru.
+  Future<void> _searchByCompanyName(String name) async {
+    if (name.trim().isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('⚠️ Napište prosím alespoň část názvu firmy.'), backgroundColor: Colors.red),
+      );
+      return;
+    }
+    setState(() => _isLoadingAres = true);
+    try {
+      final url = Uri.parse('https://ares.gov.cz/ekonomicke-subjekty-v-be/rest/ekonomicke-subjekty/vyhledat');
+      final response = await http.post(
+        url,
+        headers: {'Content-Type': 'application/json', 'Accept': 'application/json'},
+        body: jsonEncode({'obchodniJmeno': name.trim(), 'pocet': 15, 'start': 0}),
+      );
+      if (response.statusCode != 200) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('❌ Vyhledávání v ARES selhalo (kód ${response.statusCode}).'), backgroundColor: Colors.red),
+          );
+        }
+        return;
+      }
+      final data = jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
+      final subjects = (data['ekonomickeSubjekty'] as List?)?.cast<Map<String, dynamic>>() ?? [];
+      if (subjects.isEmpty) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('❌ V ARES nebyla nalezena žádná podobná firma.'), backgroundColor: Colors.red),
+          );
+        }
+        return;
+      }
+      if (mounted) await _showAresResultsPicker(subjects);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('❌ Chyba připojení k ARES: $e'), backgroundColor: Colors.red),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isLoadingAres = false);
+    }
+  }
+
+  Future<void> _showAresResultsPicker(List<Map<String, dynamic>> results) async {
+    final selected = await showDialog<Map<String, dynamic>>(
+      context: context,
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text('Podobné firmy v ARES'),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: ListView.separated(
+            shrinkWrap: true,
+            itemCount: results.length,
+            separatorBuilder: (context, index) => const Divider(height: 1),
+            itemBuilder: (context, index) {
+              final r = results[index];
+              final name = (r['obchodniJmeno'] ?? '') as String;
+              final ico = (r['ico'] ?? '') as String;
+              final sidlo = r['sidlo'] as Map<String, dynamic>?;
+              final city = sidlo?['nazevObce']?.toString() ?? '';
+              return ListTile(
+                leading: const Icon(Icons.business, color: Color(0xFF0284C7)),
+                title: Text(name, style: const TextStyle(fontWeight: FontWeight.bold)),
+                subtitle: Text('IČO: $ico${city.isNotEmpty ? " • $city" : ""}'),
+                onTap: () => Navigator.pop(context, r),
+              );
+            },
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Zrušit')),
+        ],
+      ),
+    );
+    if (selected != null) {
+      final ico = (selected['ico'] ?? '') as String;
+      if (ico.isNotEmpty) {
+        await _fetchAresData(ico);
       }
     }
   }
@@ -1779,6 +1870,44 @@ class _NewReportScreenState extends State<NewReportScreen> {
     });
   }
 
+  void _showSavedCompanyPicker() {
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Padding(
+              padding: EdgeInsets.all(16),
+              child: Text('Moje kontrolované firmy', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+            ),
+            ConstrainedBox(
+              constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.5),
+              child: ListView.builder(
+                shrinkWrap: true,
+                itemCount: savedCompanies.length,
+                itemBuilder: (context, index) {
+                  final c = savedCompanies[index];
+                  return ListTile(
+                    leading: const Icon(Icons.business_center, color: Color(0xFF10B981)),
+                    title: Text(c.name, style: const TextStyle(fontWeight: FontWeight.bold)),
+                    subtitle: Text(c.ico.isNotEmpty ? 'IČO: ${c.ico}' : (c.address.isNotEmpty ? c.address : 'Bez dalších údajů')),
+                    onTap: () {
+                      _selectSavedCompany(c);
+                      Navigator.pop(context);
+                    },
+                  );
+                },
+              ),
+            ),
+            const SizedBox(height: 12),
+          ],
+        ),
+      ),
+    );
+  }
+
   void _deleteSavedCompany(SavedCompany company) {
     setState(() {
       savedCompanies.removeWhere((c) => c.id == company.id);
@@ -1814,6 +1943,20 @@ class _NewReportScreenState extends State<NewReportScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            if (savedCompanies.isNotEmpty) ...[
+              OutlinedButton.icon(
+                icon: const Icon(Icons.playlist_add_check, color: Color(0xFF10B981)),
+                label: const Text('VYBRAT Z MÝCH FIREM', style: TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF10B981))),
+                style: OutlinedButton.styleFrom(
+                  side: const BorderSide(color: Color(0xFF10B981), width: 1.5),
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                ),
+                onPressed: _showSavedCompanyPicker,
+              ),
+              const SizedBox(height: 16),
+            ],
+
             const Text('KONTROLOVANÝ SUBJEKT (FIRMA):', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Color(0xFF0284C7))),
             const SizedBox(height: 8),
 
@@ -1824,6 +1967,11 @@ class _NewReportScreenState extends State<NewReportScreen> {
                 hintText: 'např. BENZINA s.r.o.',
                 border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
                 prefixIcon: const Icon(Icons.business, color: Color(0xFF0284C7)),
+                suffixIcon: IconButton(
+                  icon: const Icon(Icons.search, color: Color(0xFF0284C7)),
+                  tooltip: 'Vyhledat v ARES podle názvu',
+                  onPressed: () => _searchByCompanyName(_companyController.text),
+                ),
               ),
             ),
             const SizedBox(height: 10),

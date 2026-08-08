@@ -434,26 +434,59 @@ class ActiveReportContext {
 
 ActiveReportContext currentReportContext = ActiveReportContext();
 
+/// Provozovna / pracoviště patřící k uložené firmě.
+class SavedBranch {
+  final String id;
+  String name;
+  String address;
+  String note;
+
+  SavedBranch({
+    required this.id,
+    required this.name,
+    this.address = '',
+    this.note = '',
+  });
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'name': name,
+        'address': address,
+        'note': note,
+      };
+
+  factory SavedBranch.fromJson(Map<String, dynamic> json) => SavedBranch(
+        id: json['id'] as String? ?? DateTime.now().millisecondsSinceEpoch.toString(),
+        name: json['name'] as String? ?? '',
+        address: json['address'] as String? ?? '',
+        note: json['note'] as String? ?? '',
+      );
+}
+
 /// Uložená firma pro rychlý výběr přes tlačítko "Vybrat z mých firem"
-/// na obrazovce Zadání lokace & historie.
+/// na obrazovce Zadání lokace & historie. Ke každé firmě lze evidovat
+/// libovolný počet provozoven, které se dají po rozkliknutí rovnou vybrat.
 class SavedCompany {
   final String id;
   String name;
   String ico;
   String address;
+  List<SavedBranch> branches;
 
   SavedCompany({
     required this.id,
     required this.name,
     this.ico = '',
     this.address = '',
-  });
+    List<SavedBranch>? branches,
+  }) : branches = branches ?? [];
 
   Map<String, dynamic> toJson() => {
         'id': id,
         'name': name,
         'ico': ico,
         'address': address,
+        'branches': branches.map((b) => b.toJson()).toList(),
       };
 
   factory SavedCompany.fromJson(Map<String, dynamic> json) => SavedCompany(
@@ -461,35 +494,93 @@ class SavedCompany {
         name: json['name'] as String? ?? '',
         ico: json['ico'] as String? ?? '',
         address: json['address'] as String? ?? '',
+        branches: ((json['branches'] as List?) ?? [])
+            .map((b) => SavedBranch.fromJson(b as Map<String, dynamic>))
+            .toList(),
       );
 }
 
 List<SavedCompany> savedCompanies = [];
 
+/// Výsledek výběru z obrazovky "Vybrat z mých firem" – firma a volitelně
+/// i konkrétní provozovna, kterou uživatel rozklikl.
+class CompanySelection {
+  final SavedCompany company;
+  final SavedBranch? branch;
+  CompanySelection(this.company, [this.branch]);
+}
+
 /// Uloží/aktualizuje firmu v seznamu "mých firem" – páruje podle IČO,
 /// pokud je vyplněné, jinak podle (diakriticky nezávislého) názvu.
-void upsertSavedCompany({required String name, String ico = '', String address = ''}) {
+/// Pokud je vyplněné `branchName`, uloží zároveň i provozovnu.
+SavedCompany? upsertSavedCompany({
+  required String name,
+  String ico = '',
+  String address = '',
+  String branchName = '',
+  String branchAddress = '',
+}) {
   final String trimmedName = name.trim();
-  if (trimmedName.isEmpty) return;
+  if (trimmedName.isEmpty) return null;
   final String normalizedIco = ico.trim();
 
   final int idx = savedCompanies.indexWhere((c) =>
       (normalizedIco.isNotEmpty && c.ico == normalizedIco) ||
       (normalizedIco.isEmpty && _normalizeForMatch(c.name) == _normalizeForMatch(trimmedName)));
 
+  final SavedCompany company;
   if (idx >= 0) {
-    savedCompanies[idx].name = trimmedName;
-    if (normalizedIco.isNotEmpty) savedCompanies[idx].ico = normalizedIco;
-    if (address.trim().isNotEmpty) savedCompanies[idx].address = address.trim();
+    company = savedCompanies[idx];
+    company.name = trimmedName;
+    if (normalizedIco.isNotEmpty) company.ico = normalizedIco;
+    if (address.trim().isNotEmpty) company.address = address.trim();
   } else {
-    savedCompanies.add(SavedCompany(
+    company = SavedCompany(
       id: DateTime.now().millisecondsSinceEpoch.toString(),
       name: trimmedName,
       ico: normalizedIco,
       address: address.trim(),
+    );
+    savedCompanies.add(company);
+  }
+
+  if (branchName.trim().isNotEmpty) {
+    upsertSavedBranch(company, name: branchName, address: branchAddress, persist: false);
+  }
+
+  persistCompanies();
+  return company;
+}
+
+/// Uloží/aktualizuje provozovnu u dané firmy – páruje podle
+/// (diakriticky nezávislého) názvu provozovny.
+void upsertSavedBranch(
+  SavedCompany company, {
+  required String name,
+  String address = '',
+  String note = '',
+  bool persist = true,
+}) {
+  final String trimmedName = name.trim();
+  if (trimmedName.isEmpty) return;
+
+  final int idx = company.branches
+      .indexWhere((b) => _normalizeForMatch(b.name) == _normalizeForMatch(trimmedName));
+
+  if (idx >= 0) {
+    company.branches[idx].name = trimmedName;
+    if (address.trim().isNotEmpty) company.branches[idx].address = address.trim();
+    if (note.trim().isNotEmpty) company.branches[idx].note = note.trim();
+  } else {
+    company.branches.add(SavedBranch(
+      id: DateTime.now().millisecondsSinceEpoch.toString(),
+      name: trimmedName,
+      address: address.trim(),
+      note: note.trim(),
     ));
   }
-  persistCompanies();
+
+  if (persist) persistCompanies();
 }
 
 List<Finding> globalFindings = [];
@@ -584,6 +675,109 @@ Future<void> persistCompanies() async {
   } catch (e) {
     debugPrint('Nepodařilo se uložit firmy: $e');
   }
+}
+
+// -----------------------------------------------------------------------------
+// ARES – REST API pro vyhledání ekonomických subjektů
+// -----------------------------------------------------------------------------
+const String _kAresBaseUrl = 'https://ares.gov.cz/ekonomicke-subjekty-v-be/rest/ekonomicke-subjekty';
+
+/// Rozloží pole "sidlo" z odpovědi ARES na jednotlivé části adresy a na
+/// jeden souhrnný řádek použitelný do pole "Sídlo / Adresa".
+Map<String, String> parseAresSidlo(Map<String, dynamic>? sidlo) {
+  String street = '';
+  String houseNumber = '';
+  String city = '';
+  String zip = '';
+
+  if (sidlo != null) {
+    street = sidlo['nazevUlice']?.toString() ?? '';
+    if (street.isEmpty) {
+      street = sidlo['nazevCastiObce']?.toString() ?? sidlo['nazevObce']?.toString() ?? '';
+    }
+
+    final cisloDomovni = sidlo['cisloDomovni'];
+    final cisloOrientacni = sidlo['cisloOrientacni'];
+    final cisloOrientacniPismeno = sidlo['cisloOrientacniPismeno'];
+
+    if (cisloDomovni != null && cisloOrientacni != null) {
+      houseNumber = '$cisloDomovni/$cisloOrientacni';
+    } else if (cisloDomovni != null) {
+      houseNumber = '$cisloDomovni';
+    } else if (cisloOrientacni != null) {
+      houseNumber = '$cisloOrientacni';
+    }
+
+    if (cisloOrientacniPismeno != null && cisloOrientacniPismeno.toString().isNotEmpty) {
+      houseNumber += cisloOrientacniPismeno.toString();
+    }
+
+    final String nazevObce = sidlo['nazevObce']?.toString() ?? '';
+    final String nazevCastiObce = sidlo['nazevCastiObce']?.toString() ?? '';
+    if (nazevObce.isNotEmpty && nazevCastiObce.isNotEmpty && nazevObce != nazevCastiObce) {
+      city = '$nazevObce - $nazevCastiObce';
+    } else {
+      city = nazevObce.isNotEmpty ? nazevObce : nazevCastiObce;
+    }
+
+    final pscVal = sidlo['psc'];
+    if (pscVal != null) {
+      final String rawZip = pscVal.toString().replaceAll(RegExp(r'\s+'), '');
+      if (rawZip.length == 5) {
+        zip = '${rawZip.substring(0, 3)} ${rawZip.substring(3)}';
+      } else {
+        zip = rawZip;
+      }
+    }
+  }
+
+  final List<String> addressParts = [];
+  if (street.isNotEmpty) {
+    addressParts.add(houseNumber.isNotEmpty ? '$street $houseNumber' : street);
+  } else if (houseNumber.isNotEmpty) {
+    addressParts.add(houseNumber);
+  }
+  final String cityAndZip = [zip, city].where((s) => s.isNotEmpty).join(' ');
+  if (cityAndZip.isNotEmpty) addressParts.add(cityAndZip);
+
+  return {
+    'street': street,
+    'houseNumber': houseNumber,
+    'city': city,
+    'zip': zip,
+    'full': addressParts.join(', '),
+  };
+}
+
+/// Načte subjekt z ARES podle přesného IČO. Vrací `null`, pokud subjekt
+/// s daným IČO neexistuje (HTTP 404); jiné chyby vyhazuje jako výjimku.
+Future<Map<String, dynamic>?> fetchAresSubjectByIco(String ico) async {
+  final String cleanIco = ico.replaceAll(RegExp(r'\s+'), '');
+  final response = await http.get(
+    Uri.parse('$_kAresBaseUrl/$cleanIco'),
+    headers: {'Accept': 'application/json'},
+  );
+
+  if (response.statusCode == 200) {
+    return jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
+  }
+  if (response.statusCode == 404) return null;
+  throw 'Chyba při načítání z ARES (kód ${response.statusCode}).';
+}
+
+/// Vyhledá v ARES subjekty podle (i částečného) obchodního jména.
+Future<List<Map<String, dynamic>>> searchAresSubjectsByName(String name) async {
+  final response = await http.post(
+    Uri.parse('$_kAresBaseUrl/vyhledat'),
+    headers: {'Accept': 'application/json', 'Content-Type': 'application/json'},
+    body: jsonEncode({'obchodniJmeno': name.trim(), 'pocet': 15, 'start': 0}),
+  );
+
+  if (response.statusCode == 200) {
+    final data = jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
+    return ((data['ekonomickeSubjekty'] as List?) ?? []).cast<Map<String, dynamic>>();
+  }
+  throw 'Chyba při hledání v ARES (kód ${response.statusCode}).';
 }
 
 // -----------------------------------------------------------------------------
@@ -683,6 +877,25 @@ class _HomeScreenState extends State<HomeScreen> {
                       ),
                       const SizedBox(height: 20),
                       const Divider(thickness: 1.5),
+                      const SizedBox(height: 10),
+
+                      ElevatedButton.icon(
+                        icon: const Icon(Icons.apartment, size: 22),
+                        label: Text('SPRÁVA FIREM A PROVOZOVEN (${savedCompanies.length})', style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFF1E293B),
+                          foregroundColor: const Color(0xFF38BDF8),
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        ),
+                        onPressed: () async {
+                          await Navigator.push(
+                            context,
+                            MaterialPageRoute(builder: (context) => const CompanyManagerScreen()),
+                          );
+                          setState(() {});
+                        },
+                      ),
                       const SizedBox(height: 10),
 
                       ElevatedButton.icon(
@@ -993,6 +1206,481 @@ class _LegislationManagerScreenState extends State<LegislationManagerScreen> {
 }
 
 // -----------------------------------------------------------------------------
+// SPRÁVA FIREM A PROVOZOVEN
+// -----------------------------------------------------------------------------
+class CompanyManagerScreen extends StatefulWidget {
+  const CompanyManagerScreen({Key? key}) : super(key: key);
+
+  @override
+  State<CompanyManagerScreen> createState() => _CompanyManagerScreenState();
+}
+
+class _CompanyManagerScreenState extends State<CompanyManagerScreen> {
+  List<SavedCompany> get _sortedCompanies => List.of(savedCompanies)
+    ..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+
+  Future<bool> _confirmDelete(String message) async {
+    final bool? confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text('Opravdu smazat?', style: TextStyle(fontWeight: FontWeight.bold)),
+        content: Text(message),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Zrušit'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red, foregroundColor: Colors.white),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('SMAZAT'),
+          ),
+        ],
+      ),
+    );
+    return confirmed ?? false;
+  }
+
+  void _showCompanyDialog([SavedCompany? existingCompany]) {
+    final nameController = TextEditingController(text: existingCompany?.name ?? '');
+    final icoController = TextEditingController(text: existingCompany?.ico ?? '');
+    final addressController = TextEditingController(text: existingCompany?.address ?? '');
+    String errorMessage = '';
+    bool isLoadingAres = false;
+
+    showDialog(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, setDialogState) {
+          Future<void> loadFromAres() async {
+            final String ico = icoController.text.replaceAll(RegExp(r'\s+'), '');
+            if (ico.isEmpty) {
+              setDialogState(() => errorMessage = '⚠️ Pro načtení z ARES vyplňte IČO.');
+              return;
+            }
+
+            setDialogState(() {
+              isLoadingAres = true;
+              errorMessage = '';
+            });
+
+            try {
+              final Map<String, dynamic>? subject = await fetchAresSubjectByIco(ico);
+              if (!dialogContext.mounted) return;
+
+              if (subject == null) {
+                setDialogState(() => errorMessage = '❌ Subjekt s IČO $ico nebyl v ARES nalezen.');
+              } else {
+                final String name = (subject['obchodniJmeno'] ?? '') as String;
+                final String actualIco = (subject['ico'] ?? ico) as String;
+                final String address = parseAresSidlo(subject['sidlo'] as Map<String, dynamic>?)['full'] ?? '';
+                setDialogState(() {
+                  if (name.isNotEmpty) nameController.text = name;
+                  icoController.text = actualIco;
+                  if (address.isNotEmpty) addressController.text = address;
+                });
+              }
+            } catch (e) {
+              if (!dialogContext.mounted) return;
+              setDialogState(() => errorMessage = '❌ $e');
+            } finally {
+              if (dialogContext.mounted) {
+                setDialogState(() => isLoadingAres = false);
+              }
+            }
+          }
+
+          return AlertDialog(
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            title: Text(
+              existingCompany == null ? '➕ Přidat firmu' : '✏️ Upravit firmu',
+              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+            ),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (errorMessage.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 8.0),
+                      child: Text(errorMessage, style: const TextStyle(color: Colors.red, fontWeight: FontWeight.bold, fontSize: 12)),
+                    ),
+
+                  const Text('Název firmy: *', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                  const SizedBox(height: 4),
+                  TextField(
+                    controller: nameController,
+                    decoration: InputDecoration(
+                      hintText: 'např. BENZINA s.r.o.',
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+
+                  const Text('IČO (nepovinné):', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                  const SizedBox(height: 4),
+                  TextField(
+                    controller: icoController,
+                    keyboardType: TextInputType.number,
+                    decoration: InputDecoration(
+                      hintText: '12345678',
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                      suffixIcon: isLoadingAres
+                          ? const Padding(
+                              padding: EdgeInsets.all(12.0),
+                              child: SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2)),
+                            )
+                          : IconButton(
+                              icon: const Icon(Icons.search, color: Color(0xFF0284C7)),
+                              tooltip: 'Načíst z ARES',
+                              onPressed: loadFromAres,
+                            ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+
+                  const Text('Sídlo / Adresa (nepovinné):', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                  const SizedBox(height: 4),
+                  TextField(
+                    controller: addressController,
+                    maxLines: 2,
+                    decoration: InputDecoration(
+                      hintText: 'např. Milevská 2095/5, 140 00 Praha 4',
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext),
+                child: const Text('Zrušit'),
+              ),
+              ElevatedButton.icon(
+                icon: const Icon(Icons.save),
+                label: const Text('ULOŽIT FIRMU'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF0284C7),
+                  foregroundColor: Colors.white,
+                ),
+                onPressed: () {
+                  if (nameController.text.trim().isEmpty) {
+                    setDialogState(() => errorMessage = '⚠️ Vyplňte název firmy.');
+                    return;
+                  }
+
+                  setState(() {
+                    if (existingCompany != null) {
+                      existingCompany.name = nameController.text.trim();
+                      existingCompany.ico = icoController.text.trim();
+                      existingCompany.address = addressController.text.trim();
+                      persistCompanies();
+                    } else {
+                      upsertSavedCompany(
+                        name: nameController.text,
+                        ico: icoController.text,
+                        address: addressController.text,
+                      );
+                    }
+                  });
+                  Navigator.pop(dialogContext);
+                },
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  void _showBranchDialog(SavedCompany company, [SavedBranch? existingBranch]) {
+    final nameController = TextEditingController(text: existingBranch?.name ?? '');
+    final addressController = TextEditingController(text: existingBranch?.address ?? '');
+    final noteController = TextEditingController(text: existingBranch?.note ?? '');
+    String errorMessage = '';
+
+    showDialog(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, setDialogState) {
+          return AlertDialog(
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            title: Text(
+              existingBranch == null ? '➕ Přidat provozovnu' : '✏️ Upravit provozovnu',
+              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+            ),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Firma: ${company.name}', style: const TextStyle(fontSize: 12, color: Colors.grey)),
+                  const SizedBox(height: 12),
+
+                  if (errorMessage.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 8.0),
+                      child: Text(errorMessage, style: const TextStyle(color: Colors.red, fontWeight: FontWeight.bold, fontSize: 12)),
+                    ),
+
+                  const Text('Název provozovny / pracoviště: *', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                  const SizedBox(height: 4),
+                  TextField(
+                    controller: nameController,
+                    decoration: InputDecoration(
+                      hintText: 'např. Skladová hala A - Brno',
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+
+                  const Text('Adresa provozovny (nepovinné):', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                  const SizedBox(height: 4),
+                  TextField(
+                    controller: addressController,
+                    maxLines: 2,
+                    decoration: InputDecoration(
+                      hintText: 'např. Průmyslová 12, 602 00 Brno',
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+
+                  const Text('Poznámka (nepovinné):', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                  const SizedBox(height: 4),
+                  TextField(
+                    controller: noteController,
+                    maxLines: 2,
+                    decoration: InputDecoration(
+                      hintText: 'např. kontaktní osoba, otevírací doba, vstup bránou č. 2...',
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext),
+                child: const Text('Zrušit'),
+              ),
+              ElevatedButton.icon(
+                icon: const Icon(Icons.save),
+                label: const Text('ULOŽIT PROVOZOVNU'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF0284C7),
+                  foregroundColor: Colors.white,
+                ),
+                onPressed: () {
+                  if (nameController.text.trim().isEmpty) {
+                    setDialogState(() => errorMessage = '⚠️ Vyplňte název provozovny.');
+                    return;
+                  }
+
+                  setState(() {
+                    if (existingBranch != null) {
+                      existingBranch.name = nameController.text.trim();
+                      existingBranch.address = addressController.text.trim();
+                      existingBranch.note = noteController.text.trim();
+                      persistCompanies();
+                    } else {
+                      upsertSavedBranch(
+                        company,
+                        name: nameController.text,
+                        address: addressController.text,
+                        note: noteController.text,
+                      );
+                    }
+                  });
+                  Navigator.pop(dialogContext);
+                },
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final List<SavedCompany> companies = _sortedCompanies;
+
+    return Scaffold(
+      appBar: AppBar(title: const Text('Správa firem a provozoven')),
+      floatingActionButton: FloatingActionButton.extended(
+        icon: const Icon(Icons.add),
+        label: const Text('PŘIDAT FIRMU'),
+        backgroundColor: const Color(0xFF0284C7),
+        foregroundColor: Colors.white,
+        onPressed: () => _showCompanyDialog(),
+      ),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 90),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.blue[50],
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: Colors.blue[200]!),
+              ),
+              child: const Row(
+                children: [
+                  Icon(Icons.info_outline, color: Color(0xFF0284C7)),
+                  SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      'Zde si vytvoříte vlastní seznam firem a jejich provozoven. Při zadávání nové kontroly je pak stačí rozkliknout a vybrat – formulář se předvyplní.',
+                      style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+
+            Text(
+              'MOJE FIRMY (${companies.length}):',
+              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Color(0xFF0F172A)),
+            ),
+            const SizedBox(height: 8),
+
+            if (companies.isEmpty)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 30.0),
+                child: Text(
+                  'Zatím nemáte uloženou žádnou firmu.\nPřidejte první přes tlačítko dole.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Colors.grey),
+                ),
+              )
+            else
+              ListView.builder(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                itemCount: companies.length,
+                itemBuilder: (context, index) {
+                  final company = companies[index];
+                  final String details = [
+                    if (company.ico.isNotEmpty) 'IČO: ${company.ico}',
+                    if (company.address.isNotEmpty) company.address,
+                  ].join(' • ');
+
+                  return Card(
+                    margin: const EdgeInsets.symmetric(vertical: 6),
+                    elevation: 2,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                    child: ExpansionTile(
+                      leading: const CircleAvatar(
+                        backgroundColor: Color(0xFF0F172A),
+                        child: Icon(Icons.apartment, color: Colors.white, size: 20),
+                      ),
+                      title: Text(company.name, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                      subtitle: Text(
+                        [
+                          if (details.isNotEmpty) details,
+                          'Provozoven: ${company.branches.length}',
+                        ].join('\n'),
+                        style: const TextStyle(fontSize: 12),
+                      ),
+                      childrenPadding: const EdgeInsets.only(left: 8, right: 8, bottom: 8),
+                      children: [
+                        if (company.branches.isEmpty)
+                          const Padding(
+                            padding: EdgeInsets.symmetric(vertical: 8.0, horizontal: 8.0),
+                            child: Text(
+                              'Tato firma zatím nemá žádné provozovny.',
+                              style: TextStyle(fontSize: 12, color: Colors.grey),
+                            ),
+                          )
+                        else
+                          ...company.branches.map((branch) {
+                            final String branchDetails =
+                                [branch.address, branch.note].where((s) => s.isNotEmpty).join(' • ');
+                            return ListTile(
+                              dense: true,
+                              contentPadding: const EdgeInsets.symmetric(horizontal: 8),
+                              leading: const Icon(Icons.place, color: Color(0xFF0284C7)),
+                              title: Text(branch.name, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+                              subtitle: branchDetails.isEmpty
+                                  ? null
+                                  : Text(branchDetails, style: const TextStyle(fontSize: 11)),
+                              trailing: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  IconButton(
+                                    icon: const Icon(Icons.edit, color: Colors.blue, size: 20),
+                                    tooltip: 'Upravit provozovnu',
+                                    onPressed: () => _showBranchDialog(company, branch),
+                                  ),
+                                  IconButton(
+                                    icon: const Icon(Icons.delete, color: Colors.red, size: 20),
+                                    tooltip: 'Smazat provozovnu',
+                                    onPressed: () async {
+                                      final bool confirmed =
+                                          await _confirmDelete('Smazat provozovnu "${branch.name}"?');
+                                      if (!confirmed) return;
+                                      setState(() {
+                                        company.branches.removeWhere((b) => b.id == branch.id);
+                                      });
+                                      persistCompanies();
+                                    },
+                                  ),
+                                ],
+                              ),
+                            );
+                          }),
+
+                        const Divider(height: 16),
+                        Wrap(
+                          alignment: WrapAlignment.end,
+                          spacing: 8,
+                          children: [
+                            TextButton.icon(
+                              icon: const Icon(Icons.add_location_alt, size: 18),
+                              label: const Text('Přidat provozovnu'),
+                              onPressed: () => _showBranchDialog(company),
+                            ),
+                            TextButton.icon(
+                              icon: const Icon(Icons.edit, size: 18),
+                              label: const Text('Upravit firmu'),
+                              onPressed: () => _showCompanyDialog(company),
+                            ),
+                            TextButton.icon(
+                              icon: const Icon(Icons.delete, size: 18, color: Colors.red),
+                              label: const Text('Smazat firmu', style: TextStyle(color: Colors.red)),
+                              onPressed: () async {
+                                final bool confirmed = await _confirmDelete(
+                                  'Smazat firmu "${company.name}" včetně ${company.branches.length} provozoven?',
+                                );
+                                if (!confirmed) return;
+                                setState(() {
+                                  savedCompanies.removeWhere((c) => c.id == company.id);
+                                });
+                                persistCompanies();
+                              },
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  );
+                },
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// -----------------------------------------------------------------------------
 // 2. ZADÁNÍ LOKACE, FIRMY & HISTORIE
 // -----------------------------------------------------------------------------
 class NewReportScreen extends StatefulWidget {
@@ -1071,79 +1759,12 @@ class _NewReportScreenState extends State<NewReportScreen> {
     }
   }
 
-  /// Rozloží pole "sidlo" z odpovědi ARES na jednotlivé části adresy a na
-  /// jeden souhrnný řádek použitelný do pole "Sídlo / Adresa".
-  Map<String, String> _parseAresSidlo(Map<String, dynamic>? sidlo) {
-    String street = '';
-    String houseNumber = '';
-    String city = '';
-    String zip = '';
-
-    if (sidlo != null) {
-      street = sidlo['nazevUlice']?.toString() ?? '';
-      if (street.isEmpty) {
-        street = sidlo['nazevCastiObce']?.toString() ?? sidlo['nazevObce']?.toString() ?? '';
-      }
-
-      final cisloDomovni = sidlo['cisloDomovni'];
-      final cisloOrientacni = sidlo['cisloOrientacni'];
-      final cisloOrientacniPismeno = sidlo['cisloOrientacniPismeno'];
-
-      if (cisloDomovni != null && cisloOrientacni != null) {
-        houseNumber = '$cisloDomovni/$cisloOrientacni';
-      } else if (cisloDomovni != null) {
-        houseNumber = '$cisloDomovni';
-      } else if (cisloOrientacni != null) {
-        houseNumber = '$cisloOrientacni';
-      }
-
-      if (cisloOrientacniPismeno != null && cisloOrientacniPismeno.toString().isNotEmpty) {
-        houseNumber += cisloOrientacniPismeno.toString();
-      }
-
-      final String nazevObce = sidlo['nazevObce']?.toString() ?? '';
-      final String nazevCastiObce = sidlo['nazevCastiObce']?.toString() ?? '';
-      if (nazevObce.isNotEmpty && nazevCastiObce.isNotEmpty && nazevObce != nazevCastiObce) {
-        city = '$nazevObce - $nazevCastiObce';
-      } else {
-        city = nazevObce.isNotEmpty ? nazevObce : nazevCastiObce;
-      }
-
-      final pscVal = sidlo['psc'];
-      if (pscVal != null) {
-        final String rawZip = pscVal.toString().replaceAll(RegExp(r'\s+'), '');
-        if (rawZip.length == 5) {
-          zip = '${rawZip.substring(0, 3)} ${rawZip.substring(3)}';
-        } else {
-          zip = rawZip;
-        }
-      }
-    }
-
-    final List<String> addressParts = [];
-    if (street.isNotEmpty) {
-      addressParts.add(houseNumber.isNotEmpty ? '$street $houseNumber' : street);
-    } else if (houseNumber.isNotEmpty) {
-      addressParts.add(houseNumber);
-    }
-    final String cityAndZip = [zip, city].where((s) => s.isNotEmpty).join(' ');
-    if (cityAndZip.isNotEmpty) addressParts.add(cityAndZip);
-
-    return {
-      'street': street,
-      'houseNumber': houseNumber,
-      'city': city,
-      'zip': zip,
-      'full': addressParts.join(', '),
-    };
-  }
-
   /// Vyplní formulář daty jednoho ARES subjektu a rovnou ho uloží mezi
   /// "mé firmy" pro příští rychlý výběr.
   void _applyAresSubject(Map<String, dynamic> data) {
     final String companyName = (data['obchodniJmeno'] ?? '') as String;
     final String actualIco = (data['ico'] ?? '') as String;
-    final Map<String, String> address = _parseAresSidlo(data['sidlo'] as Map<String, dynamic>?);
+    final Map<String, String> address = parseAresSidlo(data['sidlo'] as Map<String, dynamic>?);
 
     setState(() {
       if (companyName.isNotEmpty) _companyController.text = companyName;
@@ -1190,14 +1811,11 @@ class _NewReportScreenState extends State<NewReportScreen> {
     });
 
     try {
-      final url = Uri.parse('https://ares.gov.cz/ekonomicke-subjekty-v-be/rest/ekonomicke-subjekty/$cleanIco');
-      final response = await http.get(url, headers: {
-        'Accept': 'application/json',
-      });
+      final Map<String, dynamic>? subject = await fetchAresSubjectByIco(cleanIco);
 
-      if (response.statusCode == 200) {
-        _applyAresSubject(jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>);
-      } else if (response.statusCode == 404) {
+      if (subject != null) {
+        _applyAresSubject(subject);
+      } else {
         // Přesné IČO nesedí – jako záchranu zkusíme vyhledat podle
         // (částečného) názvu firmy, pokud je vyplněný.
         final String nameQuery = _companyController.text.trim();
@@ -1211,12 +1829,6 @@ class _NewReportScreenState extends State<NewReportScreen> {
         } else if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(content: Text('❌ Subjekt s tímto IČO nebyl v ARES nalezen.'), backgroundColor: Colors.red),
-          );
-        }
-      } else {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('❌ Chyba při načítání z ARES (kód ${response.statusCode}).'), backgroundColor: Colors.red),
           );
         }
       }
@@ -1253,36 +1865,19 @@ class _NewReportScreenState extends State<NewReportScreen> {
     });
 
     try {
-      final url = Uri.parse('https://ares.gov.cz/ekonomicke-subjekty-v-be/rest/ekonomicke-subjekty/vyhledat');
-      final response = await http.post(
-        url,
-        headers: {'Accept': 'application/json', 'Content-Type': 'application/json'},
-        body: jsonEncode({'obchodniJmeno': query, 'pocet': 15, 'start': 0}),
-      );
+      final List<Map<String, dynamic>> results = await searchAresSubjectsByName(query);
 
-      if (response.statusCode == 200) {
-        final data = jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
-        final List<Map<String, dynamic>> results =
-            ((data['ekonomickeSubjekty'] as List?) ?? []).cast<Map<String, dynamic>>();
-
-        if (results.isEmpty) {
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('❌ V ARES nebyl nalezen žádný subjekt odpovídající "$query".'), backgroundColor: Colors.red),
-            );
-          }
-        } else if (results.length == 1) {
-          _applyAresSubject(results.first);
-        } else if (mounted) {
-          final Map<String, dynamic>? picked = await _showAresResultsPicker(results);
-          if (picked != null) _applyAresSubject(picked);
-        }
-      } else {
+      if (results.isEmpty) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('❌ Chyba při hledání v ARES (kód ${response.statusCode}).'), backgroundColor: Colors.red),
+            SnackBar(content: Text('❌ V ARES nebyl nalezen žádný subjekt odpovídající "$query".'), backgroundColor: Colors.red),
           );
         }
+      } else if (results.length == 1) {
+        _applyAresSubject(results.first);
+      } else if (mounted) {
+        final Map<String, dynamic>? picked = await _showAresResultsPicker(results);
+        if (picked != null) _applyAresSubject(picked);
       }
     } catch (e) {
       if (mounted) {
@@ -1326,7 +1921,7 @@ class _NewReportScreenState extends State<NewReportScreen> {
                       final subject = results[i];
                       final String name = (subject['obchodniJmeno'] ?? '') as String;
                       final String ico = (subject['ico'] ?? '') as String;
-                      final String address = _parseAresSidlo(subject['sidlo'] as Map<String, dynamic>?)['full'] ?? '';
+                      final String address = parseAresSidlo(subject['sidlo'] as Map<String, dynamic>?)['full'] ?? '';
                       return ListTile(
                         leading: const Icon(Icons.business, color: Color(0xFF0284C7)),
                         title: Text(name, style: const TextStyle(fontWeight: FontWeight.bold)),
@@ -1344,82 +1939,141 @@ class _NewReportScreenState extends State<NewReportScreen> {
     );
   }
 
+  /// Otevře seznam uložených firem. Firmu lze rozkliknout a vybrat rovnou
+  /// konkrétní provozovnu, která se předvyplní do pole s lokací.
   Future<void> _pickFromSavedCompanies() async {
-    if (savedCompanies.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('ℹ️ Zatím nemáte žádné uložené firmy.')),
-      );
-      return;
-    }
-
     final List<SavedCompany> sorted = List.of(savedCompanies)
       ..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
 
-    final SavedCompany? picked = await showModalBottomSheet<SavedCompany>(
+    bool openManager = false;
+
+    final CompanySelection? picked = await showModalBottomSheet<CompanySelection>(
       context: context,
       isScrollControlled: true,
       shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
       builder: (ctx) {
-        return StatefulBuilder(
-          builder: (ctx, setSheetState) {
-            return DraggableScrollableSheet(
-              initialChildSize: 0.6,
-              minChildSize: 0.3,
-              maxChildSize: 0.9,
-              expand: false,
-              builder: (ctx, scrollController) {
-                return Column(
-                  children: [
-                    const Padding(
-                      padding: EdgeInsets.all(16.0),
-                      child: Text('Vybrat z mých firem', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-                    ),
-                    Expanded(
-                      child: sorted.isEmpty
-                          ? const Center(child: Text('Zatím nemáte žádné uložené firmy.'))
-                          : ListView.separated(
-                              controller: scrollController,
-                              itemCount: sorted.length,
-                              separatorBuilder: (_, __) => const Divider(height: 1),
-                              itemBuilder: (ctx, i) {
-                                final company = sorted[i];
-                                return ListTile(
-                                  leading: const Icon(Icons.apartment, color: Color(0xFF0284C7)),
-                                  title: Text(company.name, style: const TextStyle(fontWeight: FontWeight.bold)),
-                                  subtitle: Text([
-                                    if (company.ico.isNotEmpty) 'IČO: ${company.ico}',
-                                    if (company.address.isNotEmpty) company.address,
-                                  ].join(' • ')),
-                                  trailing: IconButton(
-                                    icon: const Icon(Icons.delete_outline, color: Colors.red),
-                                    tooltip: 'Odebrat ze seznamu',
-                                    onPressed: () {
-                                      savedCompanies.removeWhere((c) => c.id == company.id);
-                                      persistCompanies();
-                                      setSheetState(() {
-                                        sorted.removeAt(i);
-                                      });
-                                    },
-                                  ),
-                                  onTap: () => Navigator.pop(ctx, company),
-                                );
-                              },
+        return DraggableScrollableSheet(
+          initialChildSize: 0.6,
+          minChildSize: 0.3,
+          maxChildSize: 0.9,
+          expand: false,
+          builder: (ctx, scrollController) {
+            return Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 16, 8, 8),
+                  child: Row(
+                    children: [
+                      const Expanded(
+                        child: Text('Vybrat z mých firem', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                      ),
+                      TextButton.icon(
+                        icon: const Icon(Icons.edit_note, size: 20),
+                        label: const Text('Spravovat'),
+                        onPressed: () {
+                          openManager = true;
+                          Navigator.pop(ctx);
+                        },
+                      ),
+                    ],
+                  ),
+                ),
+                const Divider(height: 1),
+                Expanded(
+                  child: sorted.isEmpty
+                      ? const Center(
+                          child: Padding(
+                            padding: EdgeInsets.all(24.0),
+                            child: Text(
+                              'Zatím nemáte žádné uložené firmy.\nPřidejte je přes tlačítko "Spravovat".',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(color: Colors.grey),
                             ),
-                    ),
-                  ],
-                );
-              },
+                          ),
+                        )
+                      : ListView.separated(
+                          controller: scrollController,
+                          itemCount: sorted.length,
+                          separatorBuilder: (_, __) => const Divider(height: 1),
+                          itemBuilder: (ctx, i) {
+                            final company = sorted[i];
+                            final String details = [
+                              if (company.ico.isNotEmpty) 'IČO: ${company.ico}',
+                              if (company.address.isNotEmpty) company.address,
+                            ].join(' • ');
+
+                            return ExpansionTile(
+                              leading: const Icon(Icons.apartment, color: Color(0xFF0284C7)),
+                              title: Text(company.name, style: const TextStyle(fontWeight: FontWeight.bold)),
+                              subtitle: Text(
+                                [
+                                  if (details.isNotEmpty) details,
+                                  'Provozoven: ${company.branches.length}',
+                                ].join('\n'),
+                                style: const TextStyle(fontSize: 12),
+                              ),
+                              childrenPadding: const EdgeInsets.only(left: 16, bottom: 8),
+                              children: [
+                                ListTile(
+                                  dense: true,
+                                  leading: const Icon(Icons.check_circle_outline, color: Colors.green),
+                                  title: const Text('Použít jen firmu (bez provozovny)'),
+                                  onTap: () => Navigator.pop(ctx, CompanySelection(company)),
+                                ),
+                                if (company.branches.isEmpty)
+                                  const Padding(
+                                    padding: EdgeInsets.fromLTRB(16, 4, 16, 12),
+                                    child: Text(
+                                      'Firma zatím nemá uložené provozovny – přidáte je přes "Spravovat".',
+                                      style: TextStyle(fontSize: 12, color: Colors.grey),
+                                    ),
+                                  )
+                                else
+                                  ...company.branches.map((branch) => ListTile(
+                                        dense: true,
+                                        leading: const Icon(Icons.place, color: Color(0xFF0284C7)),
+                                        title: Text(branch.name),
+                                        subtitle: [branch.address, branch.note]
+                                                .where((s) => s.isNotEmpty)
+                                                .isEmpty
+                                            ? null
+                                            : Text(
+                                                [branch.address, branch.note].where((s) => s.isNotEmpty).join(' • '),
+                                                style: const TextStyle(fontSize: 11),
+                                              ),
+                                        onTap: () => Navigator.pop(ctx, CompanySelection(company, branch)),
+                                      )),
+                              ],
+                            );
+                          },
+                        ),
+                ),
+              ],
             );
           },
         );
       },
     );
 
+    if (openManager) {
+      if (!mounted) return;
+      await Navigator.push(
+        context,
+        MaterialPageRoute(builder: (context) => const CompanyManagerScreen()),
+      );
+      if (!mounted) return;
+      setState(() {});
+      return _pickFromSavedCompanies();
+    }
+
     if (picked != null) {
       setState(() {
-        _companyController.text = picked.name;
-        _icoController.text = picked.ico;
-        _addressController.text = picked.address;
+        _companyController.text = picked.company.name;
+        _icoController.text = picked.company.ico;
+        _addressController.text = picked.company.address;
+        if (picked.branch != null) {
+          _locationController.text = picked.branch!.name;
+        }
       });
     }
   }
@@ -1427,6 +2081,7 @@ class _NewReportScreenState extends State<NewReportScreen> {
   void _startInspection() {
     String loc = _locationController.text.trim();
     String comp = _companyController.text.trim();
+    final String branchName = loc;
     if (loc.isEmpty) {
       loc = 'Inspekce BOZP (${DateTime.now().day}.${DateTime.now().month}.${DateTime.now().year})';
     }
@@ -1435,6 +2090,7 @@ class _NewReportScreenState extends State<NewReportScreen> {
         name: comp,
         ico: _icoController.text.trim(),
         address: _addressController.text.trim(),
+        branchName: branchName,
       );
     }
     Navigator.pushReplacement(

@@ -999,19 +999,65 @@ Future<Map<String, dynamic>?> fetchAresSubjectByIco(String ico) async {
   throw 'Chyba při načítání z ARES (kód ${response.statusCode}).';
 }
 
-/// Vyhledá v ARES subjekty podle (i částečného) obchodního jména.
-Future<List<Map<String, dynamic>>> searchAresSubjectsByName(String name) async {
-  final response = await http.post(
+Future<http.Response> _postAresSearch(Map<String, dynamic> filter) {
+  return http.post(
     Uri.parse('$_kAresBaseUrl/vyhledat'),
     headers: {'Accept': 'application/json', 'Content-Type': 'application/json'},
-    body: jsonEncode({'obchodniJmeno': name.trim(), 'pocet': 15, 'start': 0}),
+    body: jsonEncode(filter),
   );
+}
+
+/// Vytáhne z odpovědi ARES popis chyby. Server u zamítnutého dotazu posílá
+/// v těle vysvětlení, které je pro nápravu podstatně užitečnější než samotné
+/// číslo stavu – bez něj zbyde jen „chyba 400“ a není se čeho chytit.
+String aresErrorDetail(http.Response response) {
+  try {
+    // Tolerantní dekódování: kdyby server poslal tělo v jiném kódování,
+    // ať se kvůli jednomu znaku nepřijde o celý popis chyby.
+    final decoded = jsonDecode(utf8.decode(response.bodyBytes, allowMalformed: true));
+
+    if (decoded is Map<String, dynamic>) {
+      final popis = decoded['popis'] ?? decoded['description'] ?? decoded['message'];
+      if (popis is String && popis.trim().isNotEmpty) return popis.trim();
+
+      // Chyby validace chodí i jako seznam u klíče 'chyby'.
+      final chyby = decoded['chyby'];
+      if (chyby is List && chyby.isNotEmpty) {
+        final popisy = chyby
+            .map((e) => e is Map ? (e['popis'] ?? e['description'] ?? e['kod']) : e)
+            .where((e) => e != null)
+            .join('; ');
+        if (popisy.isNotEmpty) return popisy;
+      }
+    }
+  } catch (_) {
+    // Tělo nebylo JSON – níž se použije jeho zkrácená podoba.
+  }
+
+  final raw = utf8.decode(response.bodyBytes, allowMalformed: true).trim();
+  if (raw.isEmpty) return 'server neposlal bližší popis';
+  return raw.length > 200 ? '${raw.substring(0, 200)}…' : raw;
+}
+
+/// Vyhledá v ARES subjekty podle (i částečného) obchodního jména.
+Future<List<Map<String, dynamic>>> searchAresSubjectsByName(String name) async {
+  final String query = name.trim();
+
+  var response = await _postAresSearch({'obchodniJmeno': query, 'pocet': 15, 'start': 0});
+
+  // Když ARES dotaz odmítne, zkusí se ještě jednou v nejjednodušší podobě –
+  // jen s hledaným jménem, bez stránkování. Odpadnou tím pole, na kterých
+  // validace serveru může narazit.
+  if (response.statusCode == 400) {
+    response = await _postAresSearch({'obchodniJmeno': query});
+  }
 
   if (response.statusCode == 200) {
     final data = jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
     return ((data['ekonomickeSubjekty'] as List?) ?? []).cast<Map<String, dynamic>>();
   }
-  throw 'Chyba při hledání v ARES (kód ${response.statusCode}).';
+
+  throw 'ARES odmítl dotaz (kód ${response.statusCode}): ${aresErrorDetail(response)}';
 }
 
 // -----------------------------------------------------------------------------
@@ -1155,6 +1201,8 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
 
               const SizedBox(height: 10),
+              const _PhotoStorageBar(),
+              const SizedBox(height: 10),
               Container(
                 padding: const EdgeInsets.all(10),
                 decoration: BoxDecoration(
@@ -1168,6 +1216,8 @@ class _HomeScreenState extends State<HomeScreen> {
                   style: TextStyle(fontSize: 10, color: Colors.grey, height: 1.3),
                 ),
               ),
+              const SizedBox(height: 8),
+              const _BuildStampLabel(),
             ],
           ),
         ),
@@ -1917,8 +1967,38 @@ class _CompanyManagerScreenState extends State<CompanyManagerScreen> {
                             return ListTile(
                               dense: true,
                               contentPadding: const EdgeInsets.symmetric(horizontal: 8),
-                              leading: const Icon(Icons.place, color: Color(0xFF0284C7)),
-                              title: Text(branch.name, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+                              leading: Icon(
+                                branch.hasLayout ? Icons.map : Icons.place,
+                                color: const Color(0xFF0284C7),
+                              ),
+                              title: Row(
+                                children: [
+                                  Flexible(
+                                    child: Text(
+                                      branch.name,
+                                      style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
+                                    ),
+                                  ),
+                                  if (branch.hasLayout) ...[
+                                    const SizedBox(width: 6),
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                                      decoration: BoxDecoration(
+                                        color: Colors.green[100],
+                                        borderRadius: BorderRadius.circular(6),
+                                      ),
+                                      child: Text(
+                                        'PLÁN',
+                                        style: TextStyle(
+                                          fontSize: 9,
+                                          fontWeight: FontWeight.bold,
+                                          color: Colors.green[900],
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ],
+                              ),
                               subtitle: branchDetails.isEmpty
                                   ? null
                                   : Text(branchDetails, style: const TextStyle(fontSize: 11)),
@@ -3841,6 +3921,24 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
           ],
         ),
       ),
+    );
+  }
+}
+
+/// Označení sestavení, které se vypisuje na domovské obrazovce. Prohlížeč umí
+/// držet starou verzi aplikace v mezipaměti; podle tohoto údaje jde poznat,
+/// jestli běží skutečně poslední verze, nebo je potřeba obnovit stránku.
+const String kBuildStamp = String.fromEnvironment('BUILD_STAMP', defaultValue: 'vývojová verze');
+
+class _BuildStampLabel extends StatelessWidget {
+  const _BuildStampLabel();
+
+  @override
+  Widget build(BuildContext context) {
+    return Text(
+      'Verze aplikace: $kBuildStamp',
+      textAlign: TextAlign.center,
+      style: TextStyle(fontSize: 10, color: Colors.grey[500]),
     );
   }
 }

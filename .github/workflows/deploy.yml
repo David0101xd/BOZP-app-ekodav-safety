@@ -29,7 +29,12 @@ jobs:
         run: flutter pub get
 
       - name: Build Web
-        run: flutter build web --release --base-href "/BOZP-app-ekodav-safety/"
+        # Označení verze se vypíše v aplikaci, aby šlo poznat, jestli
+        # prohlížeč nedrží starou verzi z mezipaměti.
+        run: |
+          flutter build web --release \
+            --base-href "/BOZP-app-ekodav-safety/" \
+            --dart-define=BUILD_STAMP="$(TZ=Europe/Prague date '+%-d.%-m. %H:%M') (${GITHUB_SHA::7})"
 
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v4

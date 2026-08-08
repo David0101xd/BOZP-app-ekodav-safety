@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
+
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
@@ -514,6 +516,34 @@ class ActiveReportContext {
 ActiveReportContext currentReportContext = ActiveReportContext();
 
 /// Provozovna / pracoviště patřící k uložené firmě.
+/// Uložený plán, ze kterého jde vybírat při zahájení kontroly. Samotný obrázek
+/// leží v úložišti obrázků pod `imageId`, tady zůstává jen název a odkaz.
+class SavedLayout {
+  final String id;
+  String name;
+  String imageId;
+
+  SavedLayout({required this.id, required this.name, required this.imageId});
+
+  Map<String, dynamic> toJson() => {'id': id, 'name': name, 'imageId': imageId};
+
+  factory SavedLayout.fromJson(Map<String, dynamic> json) => SavedLayout(
+        id: json['id'] as String? ?? newEntityId(),
+        name: json['name'] as String? ?? 'Plán',
+        imageId: json['imageId'] as String? ?? '',
+      );
+}
+
+List<SavedLayout> savedLayouts = [];
+
+SavedLayout? findLayoutByImageId(String? imageId) {
+  if (imageId == null) return null;
+  for (final layout in savedLayouts) {
+    if (layout.imageId == imageId) return layout;
+  }
+  return null;
+}
+
 class SavedBranch {
   final String id;
   String name;
@@ -706,6 +736,7 @@ const String _kLegislationKey = 'ekodav_legislation_v1';
 const String _kReportsKey = 'ekodav_reports_v1';
 const String _kCompaniesKey = 'ekodav_companies_v1';
 const String _kSubLocationsKey = 'ekodav_sublocations_v1';
+const String _kLayoutsKey = 'ekodav_layouts_v1';
 
 Future<void> loadPersistedData() async {
   try {
@@ -742,6 +773,14 @@ Future<void> loadPersistedData() async {
           .toList();
     }
 
+    final layoutsJson = prefs.getString(_kLayoutsKey);
+    if (layoutsJson != null) {
+      final decoded = jsonDecode(layoutsJson) as List;
+      savedLayouts = decoded
+          .map((e) => SavedLayout.fromJson(e as Map<String, dynamic>))
+          .toList();
+    }
+
     // Vlastní seznam míst má přednost před výchozí nabídkou – i když si ho
     // uživatel celý vymaže, výchozí položky se znovu neobjeví.
     final subLocations = prefs.getStringList(_kSubLocationsKey);
@@ -775,6 +814,16 @@ Future<void> persistReports() async {
     await prefs.setString(_kReportsKey, encoded);
   } catch (e) {
     debugPrint('Nepodařilo se uložit reporty: $e');
+  }
+}
+
+Future<void> persistLayouts() async {
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    final encoded = jsonEncode(savedLayouts.map((l) => l.toJson()).toList());
+    await prefs.setString(_kLayoutsKey, encoded);
+  } catch (e) {
+    debugPrint('Nepodařilo se uložit plány: $e');
   }
 }
 
@@ -860,6 +909,10 @@ Future<void> _syncPhotosToStore() async {
   if (box == null) return;
 
   final Set<String> referenced = {};
+
+  for (final layout in savedLayouts) {
+    referenced.add(layout.imageId);
+  }
 
   for (final company in savedCompanies) {
     for (final branch in company.branches) {
@@ -2088,6 +2141,30 @@ class LayoutTapResult {
   bool get isNewPin => existingFinding == null;
 }
 
+/// Převede stránky PDF na obrázky. Plán tak může přijít i jako PDF – po
+/// převodu se s ním pracuje úplně stejně jako s nahranou fotkou, takže
+/// ťukání do plánu i vykreslení do reportu zůstávají beze změny.
+Future<List<Uint8List>> rasterizePdfPages(
+  Uint8List pdfBytes, {
+  int maxPages = 20,
+  double dpi = 110,
+}) async {
+  final List<Uint8List> pages = [];
+
+  await for (final raster in Printing.raster(pdfBytes, dpi: dpi)) {
+    pages.add(await raster.toPng());
+    if (pages.length >= maxPages) break;
+  }
+  return pages;
+}
+
+/// Pozná PDF podle úvodní značky souboru, ne podle přípony – ta na webu
+/// nemusí být k dispozici.
+bool looksLikePdf(Uint8List bytes) {
+  if (bytes.length < 5) return false;
+  return bytes[0] == 0x25 && bytes[1] == 0x50 && bytes[2] == 0x44 && bytes[3] == 0x46;
+}
+
 /// Zjistí rozměry obrázku, aby se dal vykreslit ve správném poměru stran.
 /// Bez toho by ťuknutí padalo vedle – obrázek by měl kolem sebe prázdné pruhy,
 /// se kterými by se souřadnice nepřepočítaly správně.
@@ -2103,6 +2180,189 @@ Future<Size?> decodeImageSize(Uint8List bytes) async {
     debugPrint('Nepodařilo se zjistit rozměry plánu: $e');
     return null;
   }
+}
+
+/// Nechá uživatele vybrat soubor s plánem (obrázek i PDF), u vícestránkového
+/// PDF se doptá na stránku, uloží obrázek a zařadí plán do knihovny.
+/// Vrací nově uložený plán, nebo null, když uživatel výběr zrušil.
+Future<SavedLayout?> pickAndStoreLayout(BuildContext context, {String? suggestedName}) async {
+  if (!isPhotoStoreReady) {
+    _showLayoutMessage(context, '⚠️ Úložiště obrázků není k dispozici, plán teď nelze uložit.', isError: true);
+    return null;
+  }
+
+  FilePickerResult? picked;
+  try {
+    picked = await FilePicker.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: ['pdf', 'png', 'jpg', 'jpeg', 'webp'],
+      withData: true,
+    );
+  } catch (e) {
+    if (context.mounted) {
+      _showLayoutMessage(context, '❌ Soubor se nepodařilo otevřít: $e', isError: true);
+    }
+    return null;
+  }
+
+  final PlatformFile? file = picked?.files.firstOrNull;
+  final Uint8List? raw = file?.bytes;
+  if (file == null || raw == null || raw.isEmpty) return null;
+
+  Uint8List imageBytes = raw;
+
+  if (looksLikePdf(raw)) {
+    if (!context.mounted) return null;
+
+    final List<Uint8List> pages;
+    try {
+      pages = await rasterizePdfPages(raw);
+    } catch (e) {
+      if (context.mounted) {
+        _showLayoutMessage(context, '❌ PDF se nepodařilo převést na obrázek: $e', isError: true);
+      }
+      return null;
+    }
+
+    if (pages.isEmpty) {
+      if (context.mounted) {
+        _showLayoutMessage(context, '❌ PDF neobsahuje žádnou stránku k zobrazení.', isError: true);
+      }
+      return null;
+    }
+
+    if (pages.length == 1) {
+      imageBytes = pages.first;
+    } else {
+      if (!context.mounted) return null;
+      final Uint8List? chosen = await _showPdfPagePicker(context, pages);
+      if (chosen == null) return null;
+      imageBytes = chosen;
+    }
+  }
+
+  final String? imageId = await saveStoredImage(imageBytes);
+  if (imageId == null) {
+    if (context.mounted) {
+      _showLayoutMessage(context, '❌ Plán se nepodařilo uložit do úložiště.', isError: true);
+    }
+    return null;
+  }
+
+  final String baseName = suggestedName?.trim().isNotEmpty == true
+      ? suggestedName!.trim()
+      : _stripFileExtension(file.name);
+
+  final layout = SavedLayout(
+    id: newEntityId(),
+    name: baseName.isEmpty ? 'Plán ${savedLayouts.length + 1}' : baseName,
+    imageId: imageId,
+  );
+  savedLayouts.add(layout);
+  await persistLayouts();
+
+  return layout;
+}
+
+String _stripFileExtension(String fileName) {
+  final int dot = fileName.lastIndexOf('.');
+  return dot > 0 ? fileName.substring(0, dot) : fileName;
+}
+
+void _showLayoutMessage(BuildContext context, String message, {bool isError = false}) {
+  ScaffoldMessenger.of(context).showSnackBar(
+    SnackBar(
+      content: Text(message),
+      backgroundColor: isError ? Colors.red : Colors.green[700],
+    ),
+  );
+}
+
+/// U vícestránkového PDF se zeptá, která stránka je ten plán.
+Future<Uint8List?> _showPdfPagePicker(BuildContext context, List<Uint8List> pages) {
+  return showDialog<Uint8List>(
+    context: context,
+    builder: (dialogContext) => AlertDialog(
+      title: Text('Vyberte stránku (${pages.length})'),
+      content: SizedBox(
+        width: double.maxFinite,
+        child: GridView.builder(
+          shrinkWrap: true,
+          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: 2,
+            childAspectRatio: 0.75,
+            crossAxisSpacing: 8,
+            mainAxisSpacing: 8,
+          ),
+          itemCount: pages.length,
+          itemBuilder: (context, index) => InkWell(
+            onTap: () => Navigator.pop(dialogContext, pages[index]),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Expanded(
+                  child: Container(
+                    decoration: BoxDecoration(border: Border.all(color: Colors.grey[400]!)),
+                    child: Image.memory(pages[index], fit: BoxFit.contain),
+                  ),
+                ),
+                Text('Strana ${index + 1}', style: const TextStyle(fontSize: 11)),
+              ],
+            ),
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Zrušit')),
+      ],
+    ),
+  );
+}
+
+/// Nabídne uložené plány k výběru. Vrací zvolený plán, nebo null.
+Future<SavedLayout?> showLayoutLibraryPicker(BuildContext context) {
+  return showDialog<SavedLayout>(
+    context: context,
+    builder: (dialogContext) => StatefulBuilder(
+      builder: (dialogContext, setDialogState) => AlertDialog(
+        title: const Text('Vyberte plán'),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: savedLayouts.isEmpty
+              ? const Text('Zatím nemáte nahraný žádný plán.')
+              : ListView.builder(
+                  shrinkWrap: true,
+                  itemCount: savedLayouts.length,
+                  itemBuilder: (context, index) {
+                    final layout = savedLayouts[index];
+                    final bytes = loadStoredImage(layout.imageId);
+
+                    return ListTile(
+                      leading: bytes != null
+                          ? Image.memory(bytes, width: 48, height: 48, fit: BoxFit.cover)
+                          : const Icon(Icons.broken_image, color: Colors.grey),
+                      title: Text(layout.name, style: const TextStyle(fontSize: 14)),
+                      trailing: IconButton(
+                        icon: const Icon(Icons.delete_outline, color: Colors.red, size: 20),
+                        tooltip: 'Smazat plán',
+                        onPressed: () async {
+                          await deleteStoredImage(layout.imageId);
+                          savedLayouts.removeAt(index);
+                          await persistLayouts();
+                          setDialogState(() {});
+                        },
+                      ),
+                      onTap: () => Navigator.pop(dialogContext, layout),
+                    );
+                  },
+                ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Zavřít')),
+        ],
+      ),
+    ),
+  );
 }
 
 class LayoutPinScreen extends StatefulWidget {
@@ -2612,6 +2872,7 @@ class _NewReportScreenState extends State<NewReportScreen> {
   final TextEditingController _locationController = TextEditingController();
   String? _gpsCoords;
   String? _selectedLayoutId;
+  bool _isUploadingLayout = false;
   bool _isLoadingAres = false;
   bool _isLoadingAresName = false;
   bool _isLoadingGps = false;
@@ -3014,6 +3275,129 @@ class _NewReportScreenState extends State<NewReportScreen> {
     return null;
   }
 
+  /// Panel s plánem: nahrání obrázku i PDF a výběr z už uložených plánů.
+  /// Sedí hned nad tlačítkem pro zahájení kontroly, aby bylo zřejmé, že se
+  /// zvolený plán do právě zakládané kontroly promítne.
+  Widget _buildLayoutPanel() {
+    final SavedLayout? selected = findLayoutByImageId(_selectedLayoutId);
+    final Uint8List? preview = loadStoredImage(_selectedLayoutId);
+
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.blue[50],
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.blue[200]!),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.map, size: 18, color: Color(0xFF0284C7)),
+              const SizedBox(width: 6),
+              const Text('PLÁN PROVOZOVNY', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
+              const Spacer(),
+              if (selected != null)
+                TextButton(
+                  onPressed: () => setState(() => _selectedLayoutId = null),
+                  child: const Text('Odebrat', style: TextStyle(fontSize: 12, color: Colors.red)),
+                ),
+            ],
+          ),
+          const Text(
+            'Během kontroly do plánu ťuknete a na daném místě vznikne očíslovaný nález.',
+            style: TextStyle(fontSize: 11, color: Colors.grey),
+          ),
+          const SizedBox(height: 8),
+
+          if (preview != null) ...[
+            ClipRRect(
+              borderRadius: BorderRadius.circular(8),
+              child: Image.memory(preview, height: 110, width: double.infinity, fit: BoxFit.contain),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Vybráno: ${selected?.name ?? "plán provozovny"}',
+              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(height: 8),
+          ],
+
+          Wrap(
+            spacing: 8,
+            runSpacing: 6,
+            children: [
+              ElevatedButton.icon(
+                icon: _isUploadingLayout
+                    ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                    : const Icon(Icons.upload_file, size: 18),
+                label: Text(preview == null ? 'Nahrát plán (obrázek/PDF)' : 'Nahrát jiný plán',
+                    style: const TextStyle(fontSize: 12)),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF0284C7),
+                  foregroundColor: Colors.white,
+                ),
+                onPressed: _isUploadingLayout ? null : _uploadLayout,
+              ),
+              OutlinedButton.icon(
+                icon: const Icon(Icons.photo_library, size: 18),
+                label: Text('Vybrat z plánů (${savedLayouts.length})', style: const TextStyle(fontSize: 12)),
+                onPressed: savedLayouts.isEmpty ? null : _pickLayoutFromLibrary,
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _uploadLayout() async {
+    setState(() => _isUploadingLayout = true);
+    try {
+      final layout = await pickAndStoreLayout(
+        context,
+        suggestedName: _locationController.text.trim(),
+      );
+      if (layout != null && mounted) {
+        setState(() => _selectedLayoutId = layout.imageId);
+        _rememberLayoutOnBranch(layout.imageId);
+      }
+    } finally {
+      if (mounted) setState(() => _isUploadingLayout = false);
+    }
+  }
+
+  Future<void> _pickLayoutFromLibrary() async {
+    final layout = await showLayoutLibraryPicker(context);
+    if (!mounted) return;
+
+    // Dialog umí plány i mazat, proto se překreslí i bez vybrané položky.
+    setState(() {
+      if (layout != null) _selectedLayoutId = layout.imageId;
+    });
+    if (layout != null) _rememberLayoutOnBranch(layout.imageId);
+  }
+
+  /// Přiřadí plán k provozovně, aby se při příští kontrole téhož místa
+  /// nabídl sám a nemusel se hledat znovu.
+  void _rememberLayoutOnBranch(String imageId) {
+    final String companyName = _companyController.text.trim();
+    final String branchName = _locationController.text.trim();
+    if (companyName.isEmpty || branchName.isEmpty) return;
+
+    for (final company in savedCompanies) {
+      if (_normalizeForMatch(company.name) != _normalizeForMatch(companyName)) continue;
+      for (final branch in company.branches) {
+        if (_normalizeForMatch(branch.name) == _normalizeForMatch(branchName)) {
+          branch.layoutId = imageId;
+          persistCompanies();
+          return;
+        }
+      }
+    }
+  }
+
   void _startInspection() {
     String loc = _locationController.text.trim();
     String comp = _companyController.text.trim();
@@ -3170,6 +3554,9 @@ class _NewReportScreenState extends State<NewReportScreen> {
                 prefixIcon: const Icon(Icons.location_on, color: Color(0xFF0284C7)),
               ),
             ),
+            const SizedBox(height: 18),
+
+            _buildLayoutPanel(),
             const SizedBox(height: 18),
 
             ElevatedButton.icon(

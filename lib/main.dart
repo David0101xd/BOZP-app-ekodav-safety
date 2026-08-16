@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
+import 'dart:html' as html;
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
@@ -18,6 +19,8 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await initPhotoStore();
   await loadPersistedData();
+  await restoreAuthSession();
+  handleOAuthRedirectIfPresent();
   runApp(const EkodavSafetyApp());
 }
 
@@ -56,6 +59,55 @@ Future<void> openGoogleMaps(String gpsCoords) async {
   if (!await launchUrl(url, mode: LaunchMode.externalApplication)) {
     debugPrint('Could not launch $url');
   }
+}
+
+String? extractGpsCoords(String locationName) {
+  final match = RegExp(r'GPS:\s*([^)]+)').firstMatch(locationName);
+  return match?.group(1)?.trim();
+}
+
+/// Vypálí do fotky časovou známku a (pokud je dostupná) GPS pozici jako
+/// poloprůhledný pruh dole na obrázku – slouží jako důkaz místa a času pořízení.
+Future<Uint8List> stampPhoto(Uint8List original, {required String timestamp, String? gpsText}) async {
+  final codec = await ui.instantiateImageCodec(original);
+  final frame = await codec.getNextFrame();
+  final image = frame.image;
+  final width = image.width.toDouble();
+  final height = image.height.toDouble();
+
+  final recorder = ui.PictureRecorder();
+  final canvas = Canvas(recorder, Rect.fromLTWH(0, 0, width, height));
+  canvas.drawImage(image, Offset.zero, Paint());
+
+  final barHeight = height * 0.09;
+  final barTop = height - barHeight;
+  canvas.drawRect(Rect.fromLTWH(0, barTop, width, barHeight), Paint()..color = const Color(0xB2000000));
+
+  final text = (gpsText != null && gpsText.isNotEmpty) ? '$timestamp   •   GPS: $gpsText' : timestamp;
+  final textPainter = TextPainter(
+    text: TextSpan(
+      text: text,
+      style: TextStyle(color: Colors.white, fontSize: barHeight * 0.34, fontWeight: FontWeight.bold),
+    ),
+    textDirection: TextDirection.ltr,
+    maxLines: 1,
+    ellipsis: '…',
+  );
+  textPainter.layout(maxWidth: width - 16);
+  textPainter.paint(canvas, Offset(8, barTop + (barHeight - textPainter.height) / 2));
+
+  final picture = recorder.endRecording();
+  final resultImage = await picture.toImage(image.width, image.height);
+  final byteData = await resultImage.toByteData(format: ui.ImageByteFormat.png);
+  return byteData!.buffer.asUint8List();
+}
+
+String formatTimestamp(DateTime dt) {
+  final d = dt.day.toString().padLeft(2, '0');
+  final m = dt.month.toString().padLeft(2, '0');
+  final h = dt.hour.toString().padLeft(2, '0');
+  final min = dt.minute.toString().padLeft(2, '0');
+  return '$d.$m.${dt.year} $h:$min';
 }
 
 /// Výchozí nabídka míst nálezu, dokud si uživatel nevytvoří vlastní seznam.
@@ -837,6 +889,7 @@ Future<void> persistLegislation() async {
     final prefs = await SharedPreferences.getInstance();
     final encoded = jsonEncode(globalLegislationDatabase.map((r) => r.toJson()).toList());
     await prefs.setString(_kLegislationKey, encoded);
+    lastLocalChangeAt = DateTime.now();
   } catch (e) {
     debugPrint('Nepodařilo se uložit legislativu: $e');
   }
@@ -852,6 +905,7 @@ Future<void> persistReports() async {
       savedReports.map((r) => r.toJson(includePhotoBytes: !isPhotoStoreReady)).toList(),
     );
     await prefs.setString(_kReportsKey, encoded);
+    lastLocalChangeAt = DateTime.now();
   } catch (e) {
     debugPrint('Nepodařilo se uložit reporty: $e');
   }
@@ -862,6 +916,7 @@ Future<void> persistLayouts() async {
     final prefs = await SharedPreferences.getInstance();
     final encoded = jsonEncode(savedLayouts.map((l) => l.toJson()).toList());
     await prefs.setString(_kLayoutsKey, encoded);
+    lastLocalChangeAt = DateTime.now();
   } catch (e) {
     debugPrint('Nepodařilo se uložit plány: $e');
   }
@@ -872,6 +927,7 @@ Future<void> persistCompanies() async {
     final prefs = await SharedPreferences.getInstance();
     final encoded = jsonEncode(savedCompanies.map((c) => c.toJson()).toList());
     await prefs.setString(_kCompaniesKey, encoded);
+    lastLocalChangeAt = DateTime.now();
   } catch (e) {
     debugPrint('Nepodařilo se uložit firmy: $e');
   }
@@ -1154,6 +1210,873 @@ Future<List<Map<String, dynamic>>> searchAresSubjectsByName(String name) async {
 }
 
 // -----------------------------------------------------------------------------
+// CLOUD ZÁLOHOVÁNÍ (Google Disk / OneDrive) – bez vlastního backendu
+// -----------------------------------------------------------------------------
+// Appka se přihlašuje přímo za uživatele k jeho Google/Microsoft účtu (OAuth
+// "implicit flow" v prohlížeči) a ukládá jeden JSON soubor do jeho privátní
+// appky-only složky (Google "appDataFolder" / OneDrive "approot"). Žádný
+// vlastní server, žádné sdílené úložiště se sdílenými hesly.
+//
+// DŮLEŽITÉ: níže je potřeba doplnit skutečná Client ID z Google Cloud
+// Console / Azure Portal (viz návod). Bez nich přihlášení nebude fungovat.
+const String kGoogleClientId = 'TODO_DOPLNIT_GOOGLE_CLIENT_ID.apps.googleusercontent.com';
+const String kMicrosoftClientId = 'TODO_DOPLNIT_MICROSOFT_CLIENT_ID';
+const String _cloudBackupFileName = 'ekodav_backup.json';
+
+DateTime lastLocalChangeAt = DateTime.now();
+
+enum CloudProvider { google, microsoft }
+
+class CloudAuthState {
+  String? googleToken;
+  DateTime? googleExpiry;
+  String? microsoftToken;
+  DateTime? microsoftExpiry;
+  bool autoSyncEnabled = false;
+  DateTime? lastSyncedAt;
+
+  bool get isGoogleConnected => googleToken != null && googleExpiry != null && DateTime.now().isBefore(googleExpiry!);
+  bool get isMicrosoftConnected => microsoftToken != null && microsoftExpiry != null && DateTime.now().isBefore(microsoftExpiry!);
+  bool get isAnyConnected => isGoogleConnected || isMicrosoftConnected;
+
+  void disconnect(CloudProvider provider) {
+    if (provider == CloudProvider.google) {
+      googleToken = null;
+      googleExpiry = null;
+    } else {
+      microsoftToken = null;
+      microsoftExpiry = null;
+    }
+  }
+}
+
+CloudAuthState cloudAuthState = CloudAuthState();
+
+String get _oauthRedirectUri {
+  final base = Uri.base;
+  return Uri(scheme: base.scheme, host: base.host, port: base.hasPort ? base.port : null, path: base.path).toString();
+}
+
+/// Přesměruje prohlížeč na přihlašovací stránku Google / Microsoft.
+/// Appka je jen statická stránka bez backendu, takže se používá OAuth
+/// "implicit flow" – token se vrátí rovnou v URL fragmentu, žádná výměna
+/// autorizačního kódu na serveru není potřeba.
+void startCloudSignIn(CloudProvider provider) {
+  final redirectUri = _oauthRedirectUri;
+  final Uri authUrl;
+  if (provider == CloudProvider.google) {
+    authUrl = Uri.https('accounts.google.com', '/o/oauth2/v2/auth', {
+      'client_id': kGoogleClientId,
+      'redirect_uri': redirectUri,
+      'response_type': 'token',
+      'scope': 'https://www.googleapis.com/auth/drive.appdata',
+      'state': 'google',
+      'prompt': 'select_account',
+    });
+  } else {
+    authUrl = Uri.https('login.microsoftonline.com', '/common/oauth2/v2.0/authorize', {
+      'client_id': kMicrosoftClientId,
+      'redirect_uri': redirectUri,
+      'response_type': 'token',
+      'response_mode': 'fragment',
+      'scope': 'Files.ReadWrite.AppFolder',
+      'state': 'microsoft',
+    });
+  }
+  html.window.location.href = authUrl.toString();
+}
+
+/// Zavolat jednou při startu appky – zpracuje návrat z OAuth přihlášení
+/// (token přijde v URL fragmentu za '#').
+void handleOAuthRedirectIfPresent() {
+  final fragment = Uri.base.fragment;
+  if (fragment.isEmpty || !fragment.contains('access_token')) return;
+
+  final params = Uri.splitQueryString(fragment);
+  final token = params['access_token'];
+  final state = params['state'];
+  final expiresInSec = int.tryParse(params['expires_in'] ?? '') ?? 3600;
+  if (token == null) return;
+
+  final expiry = DateTime.now().add(Duration(seconds: expiresInSec));
+  if (state == 'google') {
+    cloudAuthState.googleToken = token;
+    cloudAuthState.googleExpiry = expiry;
+  } else if (state == 'microsoft') {
+    cloudAuthState.microsoftToken = token;
+    cloudAuthState.microsoftExpiry = expiry;
+  }
+
+  // Smaž token z viditelné URL, ať nezůstává v historii prohlížeče.
+  html.window.history.replaceState(null, '', Uri.base.replace(fragment: '').toString());
+}
+
+/// Sestaví kompletní přenositelnou zálohu – na rozdíl od lokální perzistence
+/// (kde fotky a plány leží mimo JSON v IndexedDB) tady jdou fotky nálezů
+/// i obrázky plánů přímo do snapshotu, aby šly obnovit i na jiném zařízení.
+Map<String, dynamic> _buildCloudSnapshot() {
+  final Map<String, String> layoutImages = {};
+  for (final layout in savedLayouts) {
+    final bytes = loadStoredImage(layout.imageId);
+    if (bytes != null) layoutImages[layout.imageId] = base64Encode(bytes);
+  }
+
+  return {
+    'updatedAt': lastLocalChangeAt.toIso8601String(),
+    'legislation': globalLegislationDatabase.map((r) => r.toJson()).toList(),
+    'reports': savedReports.map((r) => r.toJson(includePhotoBytes: true)).toList(),
+    'companies': savedCompanies.map((c) => c.toJson()).toList(),
+    'layouts': savedLayouts.map((l) => l.toJson()).toList(),
+    'layoutImages': layoutImages,
+  };
+}
+
+Future<void> _applyCloudSnapshot(Map<String, dynamic> snapshot) async {
+  final legislation = snapshot['legislation'] as List?;
+  if (legislation != null) {
+    globalLegislationDatabase = legislation.map((e) => LegislationRule.fromJson(e as Map<String, dynamic>)).toList();
+  }
+  final reports = snapshot['reports'] as List?;
+  if (reports != null) {
+    savedReports = reports.map((e) => InspectionReport.fromJson(e as Map<String, dynamic>)).toList();
+  }
+  final companies = snapshot['companies'] as List?;
+  if (companies != null) {
+    savedCompanies = companies.map((e) => SavedCompany.fromJson(e as Map<String, dynamic>)).toList();
+  }
+
+  final layoutImages = snapshot['layoutImages'] as Map<String, dynamic>?;
+  if (layoutImages != null) {
+    for (final entry in layoutImages.entries) {
+      await saveStoredImage(base64Decode(entry.value as String), id: entry.key);
+    }
+  }
+  final layouts = snapshot['layouts'] as List?;
+  if (layouts != null) {
+    savedLayouts = layouts.map((e) => SavedLayout.fromJson(e as Map<String, dynamic>)).toList();
+  }
+
+  await persistLegislation();
+  await persistCompanies();
+  await persistLayouts();
+  await persistReports();
+}
+
+Future<String?> _findGoogleDriveFileId(String token) async {
+  final uri = Uri.https('www.googleapis.com', '/drive/v3/files', {
+    'spaces': 'appDataFolder',
+    'q': "name='$_cloudBackupFileName'",
+    'fields': 'files(id)',
+  });
+  final resp = await http.get(uri, headers: {'Authorization': 'Bearer $token'});
+  if (resp.statusCode != 200) return null;
+  final files = (jsonDecode(resp.body) as Map<String, dynamic>)['files'] as List?;
+  if (files == null || files.isEmpty) return null;
+  return (files.first as Map<String, dynamic>)['id'] as String?;
+}
+
+Future<void> _uploadToGoogleDrive(String token, String jsonBody) async {
+  final headers = {'Authorization': 'Bearer $token'};
+  final existingId = await _findGoogleDriveFileId(token);
+  String fileId;
+  if (existingId != null) {
+    fileId = existingId;
+  } else {
+    final createResp = await http.post(
+      Uri.https('www.googleapis.com', '/drive/v3/files'),
+      headers: {...headers, 'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'name': _cloudBackupFileName,
+        'parents': ['appDataFolder'],
+      }),
+    );
+    if (createResp.statusCode >= 300) {
+      throw 'vytvoření souboru selhalo (${createResp.statusCode})';
+    }
+    fileId = (jsonDecode(createResp.body) as Map<String, dynamic>)['id'] as String;
+  }
+
+  final uploadResp = await http.patch(
+    Uri.https('www.googleapis.com', '/upload/drive/v3/files/$fileId', {'uploadType': 'media'}),
+    headers: {...headers, 'Content-Type': 'application/json'},
+    body: jsonBody,
+  );
+  if (uploadResp.statusCode >= 300) {
+    throw 'nahrání selhalo (${uploadResp.statusCode})';
+  }
+}
+
+Future<String?> _downloadFromGoogleDrive(String token) async {
+  final fileId = await _findGoogleDriveFileId(token);
+  if (fileId == null) return null;
+  final resp = await http.get(
+    Uri.https('www.googleapis.com', '/drive/v3/files/$fileId', {'alt': 'media'}),
+    headers: {'Authorization': 'Bearer $token'},
+  );
+  if (resp.statusCode != 200) return null;
+  return utf8.decode(resp.bodyBytes);
+}
+
+Future<void> _uploadToOneDrive(String token, String jsonBody) async {
+  final resp = await http.put(
+    Uri.parse('https://graph.microsoft.com/v1.0/me/drive/special/approot:/$_cloudBackupFileName:/content'),
+    headers: {'Authorization': 'Bearer $token', 'Content-Type': 'application/json'},
+    body: jsonBody,
+  );
+  if (resp.statusCode >= 300) {
+    throw 'nahrání selhalo (${resp.statusCode})';
+  }
+}
+
+Future<String?> _downloadFromOneDrive(String token) async {
+  final resp = await http.get(
+    Uri.parse('https://graph.microsoft.com/v1.0/me/drive/special/approot:/$_cloudBackupFileName:/content'),
+    headers: {'Authorization': 'Bearer $token'},
+  );
+  if (resp.statusCode != 200) return null;
+  return utf8.decode(resp.bodyBytes);
+}
+
+/// Stáhne nejnovější zálohu (pokud existuje a je novější než místní data),
+/// jinak nahraje místní data do všech připojených cloudů. Vrací hlášku pro uživatele.
+Future<String> syncNow() async {
+  if (!cloudAuthState.isAnyConnected) {
+    return 'Nejste připojeni k žádnému cloudu.';
+  }
+
+  String? remoteJson;
+  final messages = <String>[];
+
+  if (remoteJson == null && cloudAuthState.isGoogleConnected) {
+    try {
+      remoteJson = await _downloadFromGoogleDrive(cloudAuthState.googleToken!);
+    } catch (e) {
+      messages.add('Google Disk – chyba stažení: $e');
+    }
+  }
+  if (remoteJson == null && cloudAuthState.isMicrosoftConnected) {
+    try {
+      remoteJson = await _downloadFromOneDrive(cloudAuthState.microsoftToken!);
+    } catch (e) {
+      messages.add('OneDrive – chyba stažení: $e');
+    }
+  }
+
+  var finalSnapshot = _buildCloudSnapshot();
+
+  if (remoteJson != null) {
+    final remoteSnapshot = jsonDecode(remoteJson) as Map<String, dynamic>;
+    final remoteUpdatedAt = DateTime.tryParse(remoteSnapshot['updatedAt'] as String? ?? '');
+    if (remoteUpdatedAt != null && remoteUpdatedAt.isAfter(lastLocalChangeAt)) {
+      await _applyCloudSnapshot(remoteSnapshot);
+      finalSnapshot = remoteSnapshot;
+      messages.add('Načtena novější verze z cloudu.');
+    } else {
+      messages.add('Místní data jsou aktuální, nahrávám do cloudu.');
+    }
+  }
+
+  final bodyToUpload = jsonEncode(finalSnapshot);
+  if (cloudAuthState.isGoogleConnected) {
+    try {
+      await _uploadToGoogleDrive(cloudAuthState.googleToken!, bodyToUpload);
+    } catch (e) {
+      messages.add('Google Disk – chyba nahrání: $e');
+    }
+  }
+  if (cloudAuthState.isMicrosoftConnected) {
+    try {
+      await _uploadToOneDrive(cloudAuthState.microsoftToken!, bodyToUpload);
+    } catch (e) {
+      messages.add('OneDrive – chyba nahrání: $e');
+    }
+  }
+
+  cloudAuthState.lastSyncedAt = DateTime.now();
+  return messages.isEmpty ? 'Synchronizace dokončena.' : messages.join('\n');
+}
+
+class CloudSyncScreen extends StatefulWidget {
+  const CloudSyncScreen({Key? key}) : super(key: key);
+
+  @override
+  State<CloudSyncScreen> createState() => _CloudSyncScreenState();
+}
+
+class _CloudSyncScreenState extends State<CloudSyncScreen> {
+  bool _isSyncing = false;
+
+  Future<void> _runSync() async {
+    setState(() => _isSyncing = true);
+    final message = await syncNow();
+    if (!mounted) return;
+    setState(() => _isSyncing = false);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), duration: const Duration(seconds: 4)),
+    );
+  }
+
+  Future<void> _confirmAndRestore() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Obnovit z cloudu?'),
+        content: const Text('Tohle přepíše místní data na tomto zařízení nejnovější zálohou z cloudu (podle času poslední změny). Pokračovat?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Zrušit')),
+          ElevatedButton(onPressed: () => Navigator.pop(context, true), child: const Text('Obnovit')),
+        ],
+      ),
+    );
+    if (confirmed == true) {
+      await _runSync();
+    }
+  }
+
+  Widget _providerTile({
+    required String name,
+    required IconData icon,
+    required Color color,
+    required bool connected,
+    required VoidCallback onConnect,
+    required VoidCallback onDisconnect,
+  }) {
+    return Card(
+      margin: const EdgeInsets.only(bottom: 10),
+      child: ListTile(
+        leading: Icon(icon, color: color, size: 32),
+        title: Text(name, style: const TextStyle(fontWeight: FontWeight.bold)),
+        subtitle: Text(connected ? '✅ Připojeno' : 'Nepřipojeno'),
+        trailing: connected
+            ? TextButton(onPressed: onDisconnect, child: const Text('Odpojit'))
+            : ElevatedButton(onPressed: onConnect, child: const Text('Připojit')),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Cloud zálohování')),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.blue[50],
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: Colors.blue[200]!),
+              ),
+              child: const Text(
+                'Legislativa, reporty, seznam firem i nahrané plány se zálohují do tvého vlastního Google Disku / OneDrive '
+                '(do skryté složky patřící jen téhle appce). Přihlášení vydrží cca 1 hodinu, pak bude potřeba se znovu připojit.',
+                style: TextStyle(fontSize: 12, color: Colors.blueGrey),
+              ),
+            ),
+            const SizedBox(height: 16),
+            _providerTile(
+              name: 'Google Disk',
+              icon: Icons.cloud,
+              color: Colors.green,
+              connected: cloudAuthState.isGoogleConnected,
+              onConnect: () => startCloudSignIn(CloudProvider.google),
+              onDisconnect: () => setState(() => cloudAuthState.disconnect(CloudProvider.google)),
+            ),
+            _providerTile(
+              name: 'OneDrive',
+              icon: Icons.cloud_queue,
+              color: Colors.blue,
+              connected: cloudAuthState.isMicrosoftConnected,
+              onConnect: () => startCloudSignIn(CloudProvider.microsoft),
+              onDisconnect: () => setState(() => cloudAuthState.disconnect(CloudProvider.microsoft)),
+            ),
+            const SizedBox(height: 10),
+            SwitchListTile(
+              title: const Text('Automatická synchronizace', style: TextStyle(fontWeight: FontWeight.bold)),
+              subtitle: const Text('Appka bude na pozadí (dokud je otevřená v prohlížeči) pravidelně ukládat a stahovat změny.'),
+              value: cloudAuthState.autoSyncEnabled,
+              onChanged: cloudAuthState.isAnyConnected
+                  ? (val) => setState(() => cloudAuthState.autoSyncEnabled = val)
+                  : null,
+            ),
+            const SizedBox(height: 10),
+            if (cloudAuthState.lastSyncedAt != null)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 10),
+                child: Text(
+                  'Poslední synchronizace: ${formatTimestamp(cloudAuthState.lastSyncedAt!)}',
+                  style: const TextStyle(fontSize: 12, color: Colors.grey),
+                  textAlign: TextAlign.center,
+                ),
+              ),
+            ElevatedButton.icon(
+              icon: _isSyncing
+                  ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                  : const Icon(Icons.cloud_upload),
+              label: Text(_isSyncing ? 'Synchronizuji...' : 'Zálohovat / synchronizovat teď'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF0284C7),
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(vertical: 14),
+              ),
+              onPressed: (_isSyncing || !cloudAuthState.isAnyConnected) ? null : _runSync,
+            ),
+            const SizedBox(height: 8),
+            OutlinedButton.icon(
+              icon: const Icon(Icons.cloud_download),
+              label: const Text('Obnovit z cloudu (přepíše místní data)'),
+              onPressed: (_isSyncing || !cloudAuthState.isAnyConnected) ? null : _confirmAndRestore,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// -----------------------------------------------------------------------------
+// PŘIHLÁŠENÍ / REGISTRACE (Firebase Authentication + Realtime Database přes REST)
+// -----------------------------------------------------------------------------
+// DŮLEŽITÉ: doplň skutečný Web API Key a URL databáze z Firebase Console
+// (Project settings → General, a Build → Realtime Database).
+const String kFirebaseApiKey = 'TODO_DOPLNIT_FIREBASE_WEB_API_KEY';
+const String kFirebaseDatabaseUrl = 'TODO_DOPLNIT_FIREBASE_DATABASE_URL';
+
+const String _kAuthSessionKey = 'ekodav_auth_session_v1';
+
+class UserProfile {
+  String uid;
+  String email;
+  String firstName;
+  String lastName;
+  String phone;
+  String address;
+  String bozpCertNumber;
+  String poCertNumber;
+
+  UserProfile({
+    required this.uid,
+    required this.email,
+    required this.firstName,
+    required this.lastName,
+    required this.phone,
+    this.address = '',
+    this.bozpCertNumber = '',
+    this.poCertNumber = '',
+  });
+
+  String get fullName => '$firstName $lastName'.trim();
+
+  Map<String, dynamic> toJson() => {
+        'uid': uid,
+        'email': email,
+        'firstName': firstName,
+        'lastName': lastName,
+        'phone': phone,
+        'address': address,
+        'bozpCertNumber': bozpCertNumber,
+        'poCertNumber': poCertNumber,
+      };
+
+  factory UserProfile.fromJson(Map<String, dynamic> json) => UserProfile(
+        uid: json['uid'] as String? ?? '',
+        email: json['email'] as String? ?? '',
+        firstName: json['firstName'] as String? ?? '',
+        lastName: json['lastName'] as String? ?? '',
+        phone: json['phone'] as String? ?? '',
+        address: json['address'] as String? ?? '',
+        bozpCertNumber: json['bozpCertNumber'] as String? ?? '',
+        poCertNumber: json['poCertNumber'] as String? ?? '',
+      );
+}
+
+class AuthState {
+  String? idToken;
+  String? refreshToken;
+  DateTime? tokenExpiry;
+  UserProfile? profile;
+
+  bool get isLoggedIn => idToken != null && profile != null;
+  bool get isTokenExpiringSoon =>
+      tokenExpiry == null || DateTime.now().isAfter(tokenExpiry!.subtract(const Duration(minutes: 5)));
+}
+
+AuthState currentAuth = AuthState();
+
+String _friendlyFirebaseError(String code) {
+  switch (code) {
+    case 'EMAIL_NOT_FOUND':
+    case 'INVALID_PASSWORD':
+    case 'INVALID_LOGIN_CREDENTIALS':
+      return 'Nesprávný email nebo heslo.';
+    case 'EMAIL_EXISTS':
+      return 'Tento email už je zaregistrovaný.';
+    case 'INVALID_EMAIL':
+      return 'Neplatný formát emailu.';
+    case 'TOKEN_EXPIRED':
+      return 'Přihlášení vypršelo, přihlaste se prosím znovu.';
+    default:
+      if (code.startsWith('WEAK_PASSWORD')) return 'Heslo musí mít alespoň 6 znaků.';
+      return code.isEmpty ? 'Neznámá chyba.' : code;
+  }
+}
+
+Future<void> _saveProfileToDatabase(String idToken, String uid, UserProfile profile) async {
+  final resp = await http.put(
+    Uri.parse('$kFirebaseDatabaseUrl/users/$uid.json?auth=$idToken'),
+    body: jsonEncode(profile.toJson()),
+  );
+  if (resp.statusCode >= 300) {
+    throw 'uložení profilu selhalo (${resp.statusCode})';
+  }
+}
+
+Future<UserProfile?> _loadProfileFromDatabase(String idToken, String uid) async {
+  final resp = await http.get(Uri.parse('$kFirebaseDatabaseUrl/users/$uid.json?auth=$idToken'));
+  if (resp.statusCode != 200) return null;
+  if (resp.body == 'null') return null;
+  return UserProfile.fromJson(jsonDecode(resp.body) as Map<String, dynamic>);
+}
+
+Future<void> _persistAuthSession() async {
+  final prefs = await SharedPreferences.getInstance();
+  if (!currentAuth.isLoggedIn) {
+    await prefs.remove(_kAuthSessionKey);
+    return;
+  }
+  await prefs.setString(
+    _kAuthSessionKey,
+    jsonEncode({
+      'idToken': currentAuth.idToken,
+      'refreshToken': currentAuth.refreshToken,
+      'tokenExpiry': currentAuth.tokenExpiry?.toIso8601String(),
+      'profile': currentAuth.profile!.toJson(),
+    }),
+  );
+}
+
+/// Zavolat při startu appky – obnoví přihlášení z localStorage a v případě
+/// potřeby rovnou vymění expirovaný token za nový (bez nutnosti se znovu hlásit).
+Future<void> restoreAuthSession() async {
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_kAuthSessionKey);
+    if (raw == null) return;
+    final data = jsonDecode(raw) as Map<String, dynamic>;
+    currentAuth
+      ..idToken = data['idToken'] as String?
+      ..refreshToken = data['refreshToken'] as String?
+      ..tokenExpiry = DateTime.tryParse(data['tokenExpiry'] as String? ?? '')
+      ..profile = UserProfile.fromJson(data['profile'] as Map<String, dynamic>);
+
+    if (currentAuth.isTokenExpiringSoon) {
+      await _refreshAuthToken();
+    }
+  } catch (e) {
+    debugPrint('Nepodařilo se obnovit přihlášení: $e');
+  }
+}
+
+Future<void> _refreshAuthToken() async {
+  final refreshToken = currentAuth.refreshToken;
+  if (refreshToken == null) return;
+  try {
+    final resp = await http.post(
+      Uri.https('securetoken.googleapis.com', '/v1/token', {'key': kFirebaseApiKey}),
+      headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+      body: {'grant_type': 'refresh_token', 'refresh_token': refreshToken},
+    );
+    if (resp.statusCode != 200) {
+      currentAuth = AuthState();
+      await _persistAuthSession();
+      return;
+    }
+    final data = jsonDecode(resp.body) as Map<String, dynamic>;
+    currentAuth
+      ..idToken = data['id_token'] as String
+      ..refreshToken = data['refresh_token'] as String
+      ..tokenExpiry = DateTime.now().add(Duration(seconds: int.parse(data['expires_in'] as String)));
+    await _persistAuthSession();
+  } catch (e) {
+    debugPrint('Nepodařilo se obnovit token: $e');
+  }
+}
+
+Future<void> registerUser({
+  required String email,
+  required String password,
+  required UserProfile profileData,
+}) async {
+  final signUpResp = await http.post(
+    Uri.https('identitytoolkit.googleapis.com', '/v1/accounts:signUp', {'key': kFirebaseApiKey}),
+    body: jsonEncode({'email': email, 'password': password, 'returnSecureToken': true}),
+  );
+  if (signUpResp.statusCode != 200) {
+    final err = jsonDecode(signUpResp.body) as Map<String, dynamic>;
+    throw _friendlyFirebaseError((err['error']?['message'] ?? '').toString());
+  }
+  final data = jsonDecode(signUpResp.body) as Map<String, dynamic>;
+  final idToken = data['idToken'] as String;
+  final uid = data['localId'] as String;
+
+  profileData.uid = uid;
+  profileData.email = email;
+  await _saveProfileToDatabase(idToken, uid, profileData);
+
+  currentAuth
+    ..idToken = idToken
+    ..refreshToken = data['refreshToken'] as String
+    ..tokenExpiry = DateTime.now().add(Duration(seconds: int.parse(data['expiresIn'] as String)))
+    ..profile = profileData;
+  await _persistAuthSession();
+}
+
+Future<void> loginUser({required String email, required String password}) async {
+  final resp = await http.post(
+    Uri.https('identitytoolkit.googleapis.com', '/v1/accounts:signInWithPassword', {'key': kFirebaseApiKey}),
+    body: jsonEncode({'email': email, 'password': password, 'returnSecureToken': true}),
+  );
+  if (resp.statusCode != 200) {
+    final err = jsonDecode(resp.body) as Map<String, dynamic>;
+    throw _friendlyFirebaseError((err['error']?['message'] ?? '').toString());
+  }
+  final data = jsonDecode(resp.body) as Map<String, dynamic>;
+  final idToken = data['idToken'] as String;
+  final uid = data['localId'] as String;
+
+  final profile = await _loadProfileFromDatabase(idToken, uid) ??
+      UserProfile(uid: uid, email: email, firstName: '', lastName: '', phone: '');
+
+  currentAuth
+    ..idToken = idToken
+    ..refreshToken = data['refreshToken'] as String
+    ..tokenExpiry = DateTime.now().add(Duration(seconds: int.parse(data['expiresIn'] as String)))
+    ..profile = profile;
+  await _persistAuthSession();
+}
+
+Future<void> logoutUser() async {
+  currentAuth = AuthState();
+  await _persistAuthSession();
+}
+
+class LoginScreen extends StatefulWidget {
+  const LoginScreen({Key? key}) : super(key: key);
+
+  @override
+  State<LoginScreen> createState() => _LoginScreenState();
+}
+
+class _LoginScreenState extends State<LoginScreen> {
+  final _emailController = TextEditingController();
+  final _passwordController = TextEditingController();
+  bool _isLoading = false;
+  bool _obscurePassword = true;
+
+  Future<void> _submit() async {
+    if (_emailController.text.trim().isEmpty || _passwordController.text.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('⚠️ Vyplňte email i heslo.'), backgroundColor: Colors.red),
+      );
+      return;
+    }
+    setState(() => _isLoading = true);
+    try {
+      await loginUser(email: _emailController.text.trim(), password: _passwordController.text);
+      if (mounted) Navigator.pop(context, true);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('❌ $e'), backgroundColor: Colors.red),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Přihlášení')),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const SizedBox(height: 20),
+            buildEkodavMainLogo(),
+            const SizedBox(height: 30),
+            TextField(
+              controller: _emailController,
+              keyboardType: TextInputType.emailAddress,
+              decoration: InputDecoration(
+                labelText: 'Email',
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                prefixIcon: const Icon(Icons.email),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _passwordController,
+              obscureText: _obscurePassword,
+              decoration: InputDecoration(
+                labelText: 'Heslo',
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                prefixIcon: const Icon(Icons.lock),
+                suffixIcon: IconButton(
+                  icon: Icon(_obscurePassword ? Icons.visibility : Icons.visibility_off),
+                  onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
+                ),
+              ),
+              onSubmitted: (_) => _submit(),
+            ),
+            const SizedBox(height: 20),
+            ElevatedButton(
+              onPressed: _isLoading ? null : _submit,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF0284C7),
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(vertical: 14),
+              ),
+              child: _isLoading
+                  ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                  : const Text('PŘIHLÁSIT SE', style: TextStyle(fontWeight: FontWeight.bold)),
+            ),
+            const SizedBox(height: 12),
+            TextButton(
+              onPressed: () async {
+                final registered = await Navigator.push<bool>(
+                  context,
+                  MaterialPageRoute(builder: (context) => const RegisterScreen()),
+                );
+                if (registered == true && mounted) Navigator.pop(context, true);
+              },
+              child: const Text('Nemáte účet? Zaregistrujte se'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class RegisterScreen extends StatefulWidget {
+  const RegisterScreen({Key? key}) : super(key: key);
+
+  @override
+  State<RegisterScreen> createState() => _RegisterScreenState();
+}
+
+class _RegisterScreenState extends State<RegisterScreen> {
+  final _firstNameController = TextEditingController();
+  final _lastNameController = TextEditingController();
+  final _emailController = TextEditingController();
+  final _phoneController = TextEditingController();
+  final _passwordController = TextEditingController();
+  final _addressController = TextEditingController();
+  final _bozpCertController = TextEditingController();
+  final _poCertController = TextEditingController();
+  bool _isLoading = false;
+
+  Future<void> _submit() async {
+    if (_firstNameController.text.trim().isEmpty ||
+        _lastNameController.text.trim().isEmpty ||
+        _emailController.text.trim().isEmpty ||
+        _phoneController.text.trim().isEmpty ||
+        _passwordController.text.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('⚠️ Vyplňte prosím jméno, příjmení, email, telefon a heslo.'), backgroundColor: Colors.red),
+      );
+      return;
+    }
+    if (_passwordController.text.length < 6) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('⚠️ Heslo musí mít alespoň 6 znaků.'), backgroundColor: Colors.red),
+      );
+      return;
+    }
+
+    setState(() => _isLoading = true);
+    try {
+      final profile = UserProfile(
+        uid: '',
+        email: _emailController.text.trim(),
+        firstName: _firstNameController.text.trim(),
+        lastName: _lastNameController.text.trim(),
+        phone: _phoneController.text.trim(),
+        address: _addressController.text.trim(),
+        bozpCertNumber: _bozpCertController.text.trim(),
+        poCertNumber: _poCertController.text.trim(),
+      );
+      await registerUser(email: profile.email, password: _passwordController.text, profileData: profile);
+      if (mounted) Navigator.pop(context, true);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('❌ $e'), backgroundColor: Colors.red),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  Widget _field(TextEditingController controller, String label, {bool required = false, TextInputType? keyboardType, bool obscure = false}) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: TextField(
+        controller: controller,
+        keyboardType: keyboardType,
+        obscureText: obscure,
+        decoration: InputDecoration(
+          labelText: required ? '$label *' : '$label (nepovinné)',
+          border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Registrace')),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            _field(_firstNameController, 'Jméno', required: true),
+            _field(_lastNameController, 'Příjmení', required: true),
+            _field(_emailController, 'Email', required: true, keyboardType: TextInputType.emailAddress),
+            _field(_phoneController, 'Telefon', required: true, keyboardType: TextInputType.phone),
+            _field(_passwordController, 'Heslo (min. 6 znaků)', required: true, obscure: true),
+            _field(_addressController, 'Adresa'),
+            _field(_bozpCertController, 'Číslo osvědčení BOZP'),
+            _field(_poCertController, 'Číslo osvědčení PO'),
+            const SizedBox(height: 10),
+            ElevatedButton(
+              onPressed: _isLoading ? null : _submit,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF10B981),
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(vertical: 14),
+              ),
+              child: _isLoading
+                  ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                  : const Text('ZAREGISTROVAT SE', style: TextStyle(fontWeight: FontWeight.bold)),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// -----------------------------------------------------------------------------
 // 1. DOMOVSKÁ OBRAZOVKA
 // -----------------------------------------------------------------------------
 class HomeScreen extends StatefulWidget {
@@ -1171,6 +2094,39 @@ class _HomeScreenState extends State<HomeScreen> {
         backgroundColor: Theme.of(context).colorScheme.primary,
         centerTitle: true,
         title: buildEkodavLogoHeader(),
+        actions: [
+          IconButton(
+            icon: Icon(currentAuth.isLoggedIn ? Icons.account_circle : Icons.login, color: Colors.white),
+            tooltip: currentAuth.isLoggedIn ? currentAuth.profile!.fullName : 'Přihlásit se',
+            onPressed: () async {
+              if (currentAuth.isLoggedIn) {
+                final logout = await showDialog<bool>(
+                  context: context,
+                  builder: (context) => AlertDialog(
+                    title: Text(currentAuth.profile!.fullName),
+                    content: Text(
+                      '${currentAuth.profile!.email}\n'
+                      '${currentAuth.profile!.phone}'
+                      '${currentAuth.profile!.bozpCertNumber.isNotEmpty ? "\nBOZP: ${currentAuth.profile!.bozpCertNumber}" : ""}'
+                      '${currentAuth.profile!.poCertNumber.isNotEmpty ? "\nPO: ${currentAuth.profile!.poCertNumber}" : ""}',
+                    ),
+                    actions: [
+                      TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Zavřít')),
+                      TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('Odhlásit se')),
+                    ],
+                  ),
+                );
+                if (logout == true) {
+                  await logoutUser();
+                  setState(() {});
+                }
+              } else {
+                await Navigator.push(context, MaterialPageRoute(builder: (context) => const LoginScreen()));
+                setState(() {});
+              }
+            },
+          ),
+        ],
       ),
       body: SafeArea(
         child: Padding(
@@ -1284,6 +2240,28 @@ class _HomeScreenState extends State<HomeScreen> {
                           await Navigator.push(
                             context,
                             MaterialPageRoute(builder: (context) => const LegislationManagerScreen()),
+                          );
+                          setState(() {});
+                        },
+                      ),
+                      const SizedBox(height: 10),
+
+                      OutlinedButton.icon(
+                        icon: Icon(Icons.cloud, size: 22, color: cloudAuthState.isAnyConnected ? Colors.green : const Color(0xFF0284C7)),
+                        label: Text(
+                          cloudAuthState.isAnyConnected ? 'CLOUD ZÁLOHOVÁNÍ (připojeno)' : 'CLOUD ZÁLOHOVÁNÍ',
+                          style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
+                        ),
+                        style: OutlinedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                          foregroundColor: const Color(0xFF0284C7),
+                          side: const BorderSide(color: Color(0xFF0284C7), width: 1.5),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        ),
+                        onPressed: () async {
+                          await Navigator.push(
+                            context,
+                            MaterialPageRoute(builder: (context) => const CloudSyncScreen()),
                           );
                           setState(() {});
                         },
@@ -3852,6 +4830,19 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
     }
   }
 
+  /// Vypálí do fotky časovou známku a GPS pozici (je-li v `locationName`) –
+  /// slouží jako důkaz místa a času pořízení. Když se to nepovede, vrátí
+  /// fotku beze změny, ať focení nezhavaruje kvůli kosmetice.
+  Future<Uint8List> _stampIfPossible(Uint8List raw) async {
+    try {
+      final gps = extractGpsCoords(widget.locationName);
+      return await stampPhoto(raw, timestamp: formatTimestamp(DateTime.now()), gpsText: gps);
+    } catch (e) {
+      debugPrint('Nepodařilo se orazítkovat fotografii časem/GPS: $e');
+      return raw;
+    }
+  }
+
   Future<void> _pickPhoto(ImageSource source) async {
     try {
       final XFile? pickedFile = await _picker.pickImage(
@@ -3861,7 +4852,7 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
         imageQuality: 80,
       );
       if (pickedFile != null) {
-        final bytes = await pickedFile.readAsBytes();
+        final bytes = await _stampIfPossible(await pickedFile.readAsBytes());
         setState(() {
           _currentPhotoBytes = bytes;
           _statusMessage = source == ImageSource.camera
@@ -3876,7 +4867,7 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
         try {
           final XFile? galleryFile = await _picker.pickImage(source: ImageSource.gallery);
           if (galleryFile != null) {
-            final bytes = await galleryFile.readAsBytes();
+            final bytes = await _stampIfPossible(await galleryFile.readAsBytes());
             setState(() {
               _currentPhotoBytes = bytes;
               _statusMessage = '📷 Fotoaparát nedostupný, fotografie načtena z galerie.';
@@ -4547,6 +5538,118 @@ class ReportsHistoryScreen extends StatelessWidget {
   }
 }
 
+class _SignaturePainter extends CustomPainter {
+  final List<Offset?> points;
+  _SignaturePainter(this.points);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = Colors.black
+      ..strokeWidth = 2.5
+      ..strokeCap = StrokeCap.round;
+    for (int i = 0; i < points.length - 1; i++) {
+      final p1 = points[i];
+      final p2 = points[i + 1];
+      if (p1 != null && p2 != null) {
+        canvas.drawLine(p1, p2, paint);
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _SignaturePainter oldDelegate) => true;
+}
+
+class SignaturePad extends StatefulWidget {
+  const SignaturePad({Key? key}) : super(key: key);
+
+  @override
+  State<SignaturePad> createState() => _SignaturePadState();
+}
+
+class _SignaturePadState extends State<SignaturePad> {
+  static const Size _canvasSize = Size(300, 160);
+  final List<Offset?> _points = [];
+
+  Future<Uint8List> _render() async {
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder, Rect.fromLTWH(0, 0, _canvasSize.width, _canvasSize.height));
+    canvas.drawRect(Rect.fromLTWH(0, 0, _canvasSize.width, _canvasSize.height), Paint()..color = Colors.white);
+    final paint = Paint()
+      ..color = Colors.black
+      ..strokeWidth = 2.5
+      ..strokeCap = StrokeCap.round;
+    for (int i = 0; i < _points.length - 1; i++) {
+      final p1 = _points[i];
+      final p2 = _points[i + 1];
+      if (p1 != null && p2 != null) {
+        canvas.drawLine(p1, p2, paint);
+      }
+    }
+    final picture = recorder.endRecording();
+    final img = await picture.toImage(_canvasSize.width.toInt(), _canvasSize.height.toInt());
+    final byteData = await img.toByteData(format: ui.ImageByteFormat.png);
+    return byteData!.buffer.asUint8List();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      title: const Text('✍️ Podpis kontrolora'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Text('Podepište prstem nebo myší do rámečku:', style: TextStyle(fontSize: 12, color: Colors.grey)),
+          const SizedBox(height: 8),
+          Container(
+            width: _canvasSize.width,
+            height: _canvasSize.height,
+            decoration: BoxDecoration(
+              border: Border.all(color: Colors.grey.shade400),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(8),
+              child: GestureDetector(
+                onPanUpdate: (details) {
+                  setState(() {
+                    _points.add(details.localPosition);
+                  });
+                },
+                onPanEnd: (_) => setState(() => _points.add(null)),
+                child: CustomPaint(
+                  size: _canvasSize,
+                  painter: _SignaturePainter(_points),
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 6),
+          TextButton.icon(
+            onPressed: _points.isEmpty ? null : () => setState(() => _points.clear()),
+            icon: const Icon(Icons.refresh, size: 18),
+            label: const Text('Vymazat'),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Zrušit')),
+        ElevatedButton(
+          onPressed: _points.isEmpty
+              ? null
+              : () async {
+                  final bytes = await _render();
+                  if (context.mounted) Navigator.pop(context, bytes);
+                },
+          child: const Text('Uložit podpis'),
+        ),
+      ],
+    );
+  }
+}
+
 class RevisionTableScreen extends StatefulWidget {
   const RevisionTableScreen({Key? key}) : super(key: key);
 
@@ -4555,6 +5658,18 @@ class RevisionTableScreen extends StatefulWidget {
 }
 
 class _RevisionTableScreenState extends State<RevisionTableScreen> {
+  Uint8List? _signatureBytes;
+
+  Future<void> _captureSignature() async {
+    final result = await showDialog<Uint8List>(
+      context: context,
+      builder: (context) => const SignaturePad(),
+    );
+    if (result != null) {
+      setState(() => _signatureBytes = result);
+    }
+  }
+
   void _editLegislation(Finding finding) {
     TextEditingController legController = TextEditingController(text: finding.legislation);
 
@@ -4945,6 +6060,26 @@ class _RevisionTableScreenState extends State<RevisionTableScreen> {
                 ),
               );
             }).toList(),
+            if (currentAuth.isLoggedIn) ...[
+              pw.SizedBox(height: 16),
+              pw.Text(
+                'Kontrolu provedl: ${currentAuth.profile!.fullName}'
+                '${currentAuth.profile!.bozpCertNumber.isNotEmpty ? " • č. osvědčení BOZP: ${currentAuth.profile!.bozpCertNumber}" : ""}'
+                '${currentAuth.profile!.poCertNumber.isNotEmpty ? " • č. osvědčení PO: ${currentAuth.profile!.poCertNumber}" : ""}',
+                style: pw.TextStyle(fontSize: 10, color: _pdfSlate),
+              ),
+            ],
+            if (_signatureBytes != null) ...[
+              pw.SizedBox(height: 16),
+              pw.Text('Podpis kontrolora:', style: pw.TextStyle(fontSize: 10, fontWeight: pw.FontWeight.bold, color: _pdfSlate)),
+              pw.SizedBox(height: 4),
+              pw.Container(
+                height: 80,
+                width: 160,
+                decoration: pw.BoxDecoration(border: pw.Border.all(color: PdfColors.grey400)),
+                child: pw.Image(pw.MemoryImage(_signatureBytes!), fit: pw.BoxFit.contain),
+              ),
+            ],
           ];
         },
       ),
@@ -5100,6 +6235,18 @@ class _RevisionTableScreenState extends State<RevisionTableScreen> {
                         ),
                       );
                     },
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16.0),
+                  child: OutlinedButton.icon(
+                    icon: Icon(_signatureBytes != null ? Icons.check_circle : Icons.draw, color: _signatureBytes != null ? Colors.green : const Color(0xFF0284C7)),
+                    label: Text(
+                      _signatureBytes != null ? 'Podpis kontrolora přiložen' : 'Přidat podpis kontrolora (nepovinné)',
+                      style: TextStyle(fontWeight: FontWeight.bold, color: _signatureBytes != null ? Colors.green : const Color(0xFF0284C7)),
+                    ),
+                    style: OutlinedButton.styleFrom(minimumSize: const Size(double.infinity, 46)),
+                    onPressed: _captureSignature,
                   ),
                 ),
                 Padding(

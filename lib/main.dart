@@ -396,6 +396,10 @@ class Finding {
   double? pinX;
   double? pinY;
 
+  /// Který konkrétní plán (imageId v úložišti) tento puntík zobrazuje –
+  /// inspekce může mít nahraných víc plánů (patra, budovy) najednou.
+  String? layoutId;
+
   Finding({
     required this.id,
     required this.orderNumber,
@@ -409,6 +413,7 @@ class Finding {
     required this.timestamp,
     this.pinX,
     this.pinY,
+    this.layoutId,
   });
 
   /// Má nález zaznamenanou polohu v plánu?
@@ -429,6 +434,7 @@ class Finding {
         'timestamp': timestamp.toIso8601String(),
         'pinX': pinX,
         'pinY': pinY,
+        'layoutId': layoutId,
       };
 
   factory Finding.fromJson(Map<String, dynamic> json) => Finding(
@@ -444,6 +450,7 @@ class Finding {
         timestamp: DateTime.parse(json['timestamp'] as String),
         pinX: (json['pinX'] as num?)?.toDouble(),
         pinY: (json['pinY'] as num?)?.toDouble(),
+        layoutId: json['layoutId'] as String?,
       );
 }
 
@@ -457,8 +464,9 @@ class InspectionReport {
   final List<Finding> findings;
   final String? gpsCoords;
 
-  /// Plán provozovny, ke kterému se váží puntíky nálezů.
-  final String? layoutId;
+  /// Plány provozovny, ke kterým se váží puntíky nálezů (patra, budovy...).
+  /// Který konkrétní plán patří ke kterému nálezu určuje `Finding.layoutId`.
+  final List<String> layoutIds;
 
   InspectionReport({
     required this.id,
@@ -469,8 +477,8 @@ class InspectionReport {
     required this.date,
     required this.findings,
     this.gpsCoords,
-    this.layoutId,
-  });
+    List<String>? layoutIds,
+  }) : layoutIds = layoutIds ?? const [];
 
   Map<String, dynamic> toJson({bool includePhotoBytes = true}) => {
         'id': id,
@@ -481,22 +489,38 @@ class InspectionReport {
         'date': date.toIso8601String(),
         'findings': findings.map((f) => f.toJson(includePhotoBytes: includePhotoBytes)).toList(),
         'gpsCoords': gpsCoords,
-        'layoutId': layoutId,
+        'layoutIds': layoutIds,
       };
 
-  factory InspectionReport.fromJson(Map<String, dynamic> json) => InspectionReport(
-        id: json['id'] as String,
-        companyName: json['companyName'] as String? ?? '',
-        companyIco: json['companyIco'] as String? ?? '',
-        companyAddress: json['companyAddress'] as String? ?? '',
-        locationName: json['locationName'] as String,
-        date: DateTime.parse(json['date'] as String),
-        findings: (json['findings'] as List)
-            .map((f) => Finding.fromJson(f as Map<String, dynamic>))
-            .toList(),
-        gpsCoords: json['gpsCoords'] as String?,
-        layoutId: json['layoutId'] as String?,
-      );
+  /// `layoutId` (starší jednotné pole) se čte jen pro reporty uložené před
+  /// zavedením více plánů – nové reporty mají rovnou `layoutIds`.
+  factory InspectionReport.fromJson(Map<String, dynamic> json) {
+    final List<String> ids = json['layoutIds'] != null
+        ? (json['layoutIds'] as List).map((e) => e as String).toList()
+        : (json['layoutId'] != null ? [json['layoutId'] as String] : const []);
+
+    final findings = (json['findings'] as List)
+        .map((f) => Finding.fromJson(f as Map<String, dynamic>))
+        .toList();
+    // Staré nálezy měly puntík, ale žádný layoutId (byl jen jeden plán na report).
+    if (ids.isNotEmpty) {
+      for (final finding in findings) {
+        if (finding.hasPin && finding.layoutId == null) finding.layoutId = ids.first;
+      }
+    }
+
+    return InspectionReport(
+      id: json['id'] as String,
+      companyName: json['companyName'] as String? ?? '',
+      companyIco: json['companyIco'] as String? ?? '',
+      companyAddress: json['companyAddress'] as String? ?? '',
+      locationName: json['locationName'] as String,
+      date: DateTime.parse(json['date'] as String),
+      findings: findings,
+      gpsCoords: json['gpsCoords'] as String?,
+      layoutIds: ids,
+    );
+  }
 }
 
 /// Firma/lokace aktuálně rozpracované inspekce – slouží jako podklad pro
@@ -508,9 +532,9 @@ class ActiveReportContext {
   String companyAddress = '';
   String locationName = '';
 
-  /// Plán provozovny pro aktuální kontrolu – z něj se do PDF vykreslí
-  /// mapka s očíslovanými puntíky nálezů.
-  String? layoutId;
+  /// Plány provozovny pro aktuální kontrolu – z nich se do PDF vykreslí
+  /// mapky s očíslovanými puntíky nálezů (jeden plán = jedna stránka).
+  List<String> layoutIds = [];
 }
 
 ActiveReportContext currentReportContext = ActiveReportContext();
@@ -550,9 +574,13 @@ class SavedBranch {
   String address;
   String note;
 
-  /// Klíč plánu (layoutu) provozovny v úložišti obrázků. Samotné bajty se
-  /// načítají přes `loadStoredImage`, aby nezvětšovaly JSON v předvolbách.
+  /// Klíč plánu (layoutu) provozovny v úložišti obrázků. Starší jednotné
+  /// pole – nechává se pro zpětnou kompatibilitu, nové kontroly čtou/píší
+  /// `layoutIds`. Samotné bajty se načítají přes `loadStoredImage`.
   String? layoutId;
+
+  /// Všechny plány zapamatované u této provozovny (patra, budovy...).
+  List<String> layoutIds;
 
   SavedBranch({
     required this.id,
@@ -560,9 +588,10 @@ class SavedBranch {
     this.address = '',
     this.note = '',
     this.layoutId,
-  });
+    List<String>? layoutIds,
+  }) : layoutIds = layoutIds ?? (layoutId != null ? [layoutId] : []);
 
-  bool get hasLayout => layoutId != null;
+  bool get hasLayout => layoutIds.isNotEmpty || layoutId != null;
 
   Map<String, dynamic> toJson() => {
         'id': id,
@@ -570,15 +599,23 @@ class SavedBranch {
         'address': address,
         'note': note,
         'layoutId': layoutId,
+        'layoutIds': layoutIds,
       };
 
-  factory SavedBranch.fromJson(Map<String, dynamic> json) => SavedBranch(
-        id: json['id'] as String? ?? DateTime.now().millisecondsSinceEpoch.toString(),
-        name: json['name'] as String? ?? '',
-        address: json['address'] as String? ?? '',
-        note: json['note'] as String? ?? '',
-        layoutId: json['layoutId'] as String?,
-      );
+  factory SavedBranch.fromJson(Map<String, dynamic> json) {
+    final String? legacyId = json['layoutId'] as String?;
+    final List<String> ids = json['layoutIds'] != null
+        ? (json['layoutIds'] as List).map((e) => e as String).toList()
+        : (legacyId != null ? [legacyId] : const []);
+    return SavedBranch(
+      id: json['id'] as String? ?? DateTime.now().millisecondsSinceEpoch.toString(),
+      name: json['name'] as String? ?? '',
+      address: json['address'] as String? ?? '',
+      note: json['note'] as String? ?? '',
+      layoutId: legacyId,
+      layoutIds: ids,
+    );
+  }
 }
 
 /// Uložená firma pro rychlý výběr přes tlačítko "Vybrat z mých firem"
@@ -690,7 +727,10 @@ void upsertSavedBranch(
     company.branches[idx].name = trimmedName;
     if (address.trim().isNotEmpty) company.branches[idx].address = address.trim();
     if (note.trim().isNotEmpty) company.branches[idx].note = note.trim();
-    if (layoutId != null) company.branches[idx].layoutId = layoutId;
+    if (layoutId != null) {
+      company.branches[idx].layoutId = layoutId;
+      company.branches[idx].layoutIds = [layoutId];
+    }
   } else {
     company.branches.add(SavedBranch(
       id: newEntityId(),
@@ -916,12 +956,12 @@ Future<void> _syncPhotosToStore() async {
 
   for (final company in savedCompanies) {
     for (final branch in company.branches) {
-      if (branch.layoutId != null) referenced.add(branch.layoutId!);
+      referenced.addAll(branch.layoutIds);
     }
   }
 
   for (final report in savedReports) {
-    if (report.layoutId != null) referenced.add(report.layoutId!);
+    referenced.addAll(report.layoutIds);
     for (final finding in report.findings) {
       if (finding.photoBytes != null) {
         referenced.add(finding.id);
@@ -1898,6 +1938,7 @@ class _CompanyManagerScreenState extends State<CompanyManagerScreen> {
                       existingBranch.address = addressController.text.trim();
                       existingBranch.note = noteController.text.trim();
                       existingBranch.layoutId = layoutId;
+                      existingBranch.layoutIds = layoutId != null ? [layoutId!] : [];
                       persistCompanies();
                     } else {
                       upsertSavedBranch(
@@ -2871,7 +2912,7 @@ class _NewReportScreenState extends State<NewReportScreen> {
   final TextEditingController _addressController = TextEditingController();
   final TextEditingController _locationController = TextEditingController();
   String? _gpsCoords;
-  String? _selectedLayoutId;
+  List<String> _selectedLayoutIds = [];
   bool _isUploadingLayout = false;
   bool _isLoadingAres = false;
   bool _isLoadingAresName = false;
@@ -3250,38 +3291,36 @@ class _NewReportScreenState extends State<NewReportScreen> {
         _addressController.text = picked.company.address;
         if (picked.branch != null) {
           _locationController.text = picked.branch!.name;
-          _selectedLayoutId = picked.branch!.layoutId;
+          _selectedLayoutIds = List.from(picked.branch!.layoutIds);
         } else {
-          _selectedLayoutId = null;
+          _selectedLayoutIds = [];
         }
       });
     }
   }
 
-  /// Plán provozovny vybrané ze seznamu "mých firem". Pokud uživatel zadá
-  /// lokaci ručně, dohledá se plán podle názvu provozovny.
-  String? _resolveLayoutId(String companyName, String branchName) {
-    if (_selectedLayoutId != null) return _selectedLayoutId;
-    if (companyName.trim().isEmpty || branchName.trim().isEmpty) return null;
+  /// Plány provozovny vybrané ze seznamu "mých firem". Pokud uživatel zadá
+  /// lokaci ručně, dohledají se plány podle názvu provozovny.
+  List<String> _resolveLayoutIds(String companyName, String branchName) {
+    if (_selectedLayoutIds.isNotEmpty) return _selectedLayoutIds;
+    if (companyName.trim().isEmpty || branchName.trim().isEmpty) return [];
 
     for (final company in savedCompanies) {
       if (_normalizeForMatch(company.name) != _normalizeForMatch(companyName)) continue;
       for (final branch in company.branches) {
         if (_normalizeForMatch(branch.name) == _normalizeForMatch(branchName)) {
-          return branch.layoutId;
+          return branch.layoutIds;
         }
       }
     }
-    return null;
+    return [];
   }
 
-  /// Panel s plánem: nahrání obrázku i PDF a výběr z už uložených plánů.
+  /// Panel s plány: nahrání obrázku i PDF a výběr z už uložených plánů.
   /// Sedí hned nad tlačítkem pro zahájení kontroly, aby bylo zřejmé, že se
-  /// zvolený plán do právě zakládané kontroly promítne.
+  /// zvolené plány do právě zakládané kontroly promítnou. Jde jich přidat
+  /// víc najednou (patra, budovy, venkovní areál...).
   Widget _buildLayoutPanel() {
-    final SavedLayout? selected = findLayoutByImageId(_selectedLayoutId);
-    final Uint8List? preview = loadStoredImage(_selectedLayoutId);
-
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
@@ -3292,36 +3331,51 @@ class _NewReportScreenState extends State<NewReportScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
+          const Row(
             children: [
-              const Icon(Icons.map, size: 18, color: Color(0xFF0284C7)),
-              const SizedBox(width: 6),
-              const Text('PLÁN PROVOZOVNY', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
-              const Spacer(),
-              if (selected != null)
-                TextButton(
-                  onPressed: () => setState(() => _selectedLayoutId = null),
-                  child: const Text('Odebrat', style: TextStyle(fontSize: 12, color: Colors.red)),
-                ),
+              Icon(Icons.map, size: 18, color: Color(0xFF0284C7)),
+              SizedBox(width: 6),
+              Text('PLÁNY PROVOZOVNY', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
             ],
           ),
           const Text(
-            'Během kontroly do plánu ťuknete a na daném místě vznikne očíslovaný nález.',
+            'Během kontroly ťuknete do vybraného plánu a na daném místě vznikne očíslovaný nález. '
+            'Nahrát lze víc plánů (patra, budovy, venkovní areál...) a u nálezu pak mezi nimi přepínat.',
             style: TextStyle(fontSize: 11, color: Colors.grey),
           ),
           const SizedBox(height: 8),
 
-          if (preview != null) ...[
-            ClipRRect(
-              borderRadius: BorderRadius.circular(8),
-              child: Image.memory(preview, height: 110, width: double.infinity, fit: BoxFit.contain),
-            ),
+          if (_selectedLayoutIds.isNotEmpty) ...[
+            ..._selectedLayoutIds.map((imageId) {
+              final SavedLayout? selected = findLayoutByImageId(imageId);
+              final Uint8List? preview = loadStoredImage(imageId);
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 6),
+                child: Row(
+                  children: [
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(6),
+                      child: preview != null
+                          ? Image.memory(preview, width: 44, height: 44, fit: BoxFit.cover)
+                          : Container(width: 44, height: 44, color: Colors.grey[300]),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        selected?.name ?? 'Plán provozovny',
+                        style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+                      ),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.close, size: 18, color: Colors.red),
+                      tooltip: 'Odebrat',
+                      onPressed: () => setState(() => _selectedLayoutIds.remove(imageId)),
+                    ),
+                  ],
+                ),
+              );
+            }),
             const SizedBox(height: 4),
-            Text(
-              'Vybráno: ${selected?.name ?? "plán provozovny"}',
-              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
-            ),
-            const SizedBox(height: 8),
           ],
 
           Wrap(
@@ -3332,7 +3386,7 @@ class _NewReportScreenState extends State<NewReportScreen> {
                 icon: _isUploadingLayout
                     ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
                     : const Icon(Icons.upload_file, size: 18),
-                label: Text(preview == null ? 'Nahrát plán (obrázek/PDF)' : 'Nahrát jiný plán',
+                label: Text(_selectedLayoutIds.isEmpty ? 'Nahrát plán (obrázek/PDF)' : 'Nahrát další plán',
                     style: const TextStyle(fontSize: 12)),
                 style: ElevatedButton.styleFrom(
                   backgroundColor: const Color(0xFF0284C7),
@@ -3342,7 +3396,7 @@ class _NewReportScreenState extends State<NewReportScreen> {
               ),
               OutlinedButton.icon(
                 icon: const Icon(Icons.photo_library, size: 18),
-                label: Text('Vybrat z plánů (${savedLayouts.length})', style: const TextStyle(fontSize: 12)),
+                label: Text('Přidat z plánů (${savedLayouts.length})', style: const TextStyle(fontSize: 12)),
                 onPressed: savedLayouts.isEmpty ? null : _pickLayoutFromLibrary,
               ),
             ],
@@ -3360,8 +3414,10 @@ class _NewReportScreenState extends State<NewReportScreen> {
         suggestedName: _locationController.text.trim(),
       );
       if (layout != null && mounted) {
-        setState(() => _selectedLayoutId = layout.imageId);
-        _rememberLayoutOnBranch(layout.imageId);
+        setState(() {
+          if (!_selectedLayoutIds.contains(layout.imageId)) _selectedLayoutIds.add(layout.imageId);
+        });
+        _rememberLayoutsOnBranch();
       }
     } finally {
       if (mounted) setState(() => _isUploadingLayout = false);
@@ -3372,16 +3428,20 @@ class _NewReportScreenState extends State<NewReportScreen> {
     final layout = await showLayoutLibraryPicker(context);
     if (!mounted) return;
 
-    // Dialog umí plány i mazat, proto se překreslí i bez vybrané položky.
+    // Dialog umí plány i mazat, proto se překreslí i bez vybrané položky
+    // a odstraní ze seznamu i mezitím smazané plány.
     setState(() {
-      if (layout != null) _selectedLayoutId = layout.imageId;
+      if (layout != null && !_selectedLayoutIds.contains(layout.imageId)) {
+        _selectedLayoutIds.add(layout.imageId);
+      }
+      _selectedLayoutIds.removeWhere((id) => findLayoutByImageId(id) == null);
     });
-    if (layout != null) _rememberLayoutOnBranch(layout.imageId);
+    if (layout != null) _rememberLayoutsOnBranch();
   }
 
-  /// Přiřadí plán k provozovně, aby se při příští kontrole téhož místa
-  /// nabídl sám a nemusel se hledat znovu.
-  void _rememberLayoutOnBranch(String imageId) {
+  /// Přiřadí vybrané plány k provozovně, aby se při příští kontrole téhož
+  /// místa nabídly samy a nemusely se hledat znovu.
+  void _rememberLayoutsOnBranch() {
     final String companyName = _companyController.text.trim();
     final String branchName = _locationController.text.trim();
     if (companyName.isEmpty || branchName.isEmpty) return;
@@ -3390,7 +3450,8 @@ class _NewReportScreenState extends State<NewReportScreen> {
       if (_normalizeForMatch(company.name) != _normalizeForMatch(companyName)) continue;
       for (final branch in company.branches) {
         if (_normalizeForMatch(branch.name) == _normalizeForMatch(branchName)) {
-          branch.layoutId = imageId;
+          branch.layoutIds = List.from(_selectedLayoutIds);
+          branch.layoutId = _selectedLayoutIds.isNotEmpty ? _selectedLayoutIds.first : null;
           persistCompanies();
           return;
         }
@@ -3421,7 +3482,7 @@ class _NewReportScreenState extends State<NewReportScreen> {
           companyName: comp,
           companyIco: _icoController.text.trim(),
           companyAddress: _addressController.text.trim(),
-          layoutId: _resolveLayoutId(comp, branchName),
+          layoutIds: _resolveLayoutIds(comp, branchName),
         ),
       ),
     );
@@ -3676,7 +3737,7 @@ class _NewReportScreenState extends State<NewReportScreen> {
                               companyName: report.companyName,
                               companyIco: report.companyIco,
                               companyAddress: report.companyAddress,
-                              layoutId: report.layoutId,
+                              layoutIds: report.layoutIds,
                             ),
                           ),
                         );
@@ -3701,8 +3762,8 @@ class InspectionModeScreen extends StatefulWidget {
   final String companyIco;
   final String companyAddress;
 
-  /// Plán provozovny, do kterého se ťuká při zakládání nálezů.
-  final String? layoutId;
+  /// Plány provozovny, do kterých se ťuká při zakládání nálezů.
+  final List<String> layoutIds;
 
   const InspectionModeScreen({
     Key? key,
@@ -3710,7 +3771,7 @@ class InspectionModeScreen extends StatefulWidget {
     this.companyName = '',
     this.companyIco = '',
     this.companyAddress = '',
-    this.layoutId,
+    this.layoutIds = const [],
   }) : super(key: key);
 
   @override
@@ -3744,26 +3805,35 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
       ..companyIco = widget.companyIco
       ..companyAddress = widget.companyAddress
       ..locationName = widget.locationName
-      ..layoutId = widget.layoutId;
+      ..layoutIds = widget.layoutIds;
+    if (widget.layoutIds.isNotEmpty) _activeLayoutId = widget.layoutIds.first;
   }
 
-  /// Poloha v plánu, kterou dostane příští uložený nález.
+  /// Který z nahraných plánů (widget.layoutIds) se právě otvírá pro ťuknutí.
+  /// Když je plánů víc (patra, budovy...), dá se mezi nimi přepínat.
+  String? _activeLayoutId;
+
+  /// Poloha v plánu, kterou dostane příští uložený nález, a plán, ke
+  /// kterému se váže.
   double? _pendingPinX;
   double? _pendingPinY;
+  String? _pendingLayoutId;
 
-  Uint8List? get _layoutBytes => loadStoredImage(widget.layoutId);
+  Uint8List? get _activeLayoutBytes => loadStoredImage(_activeLayoutId);
 
   Future<void> _openLayout() async {
-    final bytes = _layoutBytes;
-    if (bytes == null) return;
+    final bytes = _activeLayoutBytes;
+    final layoutId = _activeLayoutId;
+    if (bytes == null || layoutId == null) return;
 
+    final layoutName = findLayoutByImageId(layoutId)?.name;
     final result = await Navigator.push<LayoutTapResult>(
       context,
       MaterialPageRoute(
         builder: (context) => LayoutPinScreen(
           layoutBytes: bytes,
-          findings: globalFindings,
-          title: 'Plán: ${widget.locationName}',
+          findings: globalFindings.where((f) => f.layoutId == layoutId).toList(),
+          title: layoutName != null ? 'Plán: $layoutName' : 'Plán: ${widget.locationName}',
         ),
       ),
     );
@@ -3771,6 +3841,7 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
 
     if (result.isNewPin) {
       setState(() {
+        _pendingLayoutId = layoutId;
         _pendingPinX = result.x;
         _pendingPinY = result.y;
         _statusMessage = '📍 Poloha v plánu zaznamenána – doplňte nález a uložte.';
@@ -3899,6 +3970,7 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
         if (_pendingPinX != null && _pendingPinY != null) {
           existing.pinX = _pendingPinX;
           existing.pinY = _pendingPinY;
+          existing.layoutId = _pendingLayoutId;
         }
         _statusMessage = '⚡ Nález #${existing.orderNumber} aktualizován!$matchLabel';
       } else {
@@ -3915,6 +3987,7 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
           timestamp: DateTime.now(),
           pinX: _pendingPinX,
           pinY: _pendingPinY,
+          layoutId: _pendingLayoutId,
         );
 
         globalFindings.add(newFinding);
@@ -3934,6 +4007,7 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
     _selectedSeverity = 'Střední';
     _pendingPinX = null;
     _pendingPinY = null;
+    _pendingLayoutId = null;
   }
 
   void _loadFindingIntoForm(int index) {
@@ -3946,6 +4020,7 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
         _selectedSeverity = finding.severity;
         _noteController.text = finding.description;
         _placeController.text = finding.locationDetail;
+        if (finding.layoutId != null) _activeLayoutId = finding.layoutId;
         _statusMessage = 'Načten nález #${finding.orderNumber} k úpravě';
       });
     }
@@ -3961,7 +4036,7 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
         locationName: widget.locationName,
         date: DateTime.now(),
         findings: List.from(globalFindings),
-        layoutId: widget.layoutId,
+        layoutIds: widget.layoutIds,
       );
       savedReports.insert(0, report);
       persistReports();
@@ -4037,23 +4112,47 @@ class _InspectionModeScreenState extends State<InspectionModeScreen> {
                 ),
               ),
 
-            if (_layoutBytes != null) ...[
-              ElevatedButton.icon(
-                icon: const Icon(Icons.map, size: 22),
-                label: Text(
-                  _pendingPinX != null
-                      ? 'POLOHA V PLÁNU ZAZNAMENÁNA – ZMĚNIT'
-                      : 'OTEVŘÍT PLÁN A ŤUKNOUT NA MÍSTO',
-                  style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
+            if (widget.layoutIds.isNotEmpty) ...[
+              if (widget.layoutIds.length > 1) ...[
+                const Text('Plán, do kterého se ťuká:', style: TextStyle(fontSize: 11, color: Colors.grey)),
+                const SizedBox(height: 4),
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 4,
+                  children: widget.layoutIds.map((id) {
+                    final name = findLayoutByImageId(id)?.name ?? 'Plán';
+                    final isActive = id == _activeLayoutId;
+                    return ChoiceChip(
+                      label: Text(name, style: const TextStyle(fontSize: 12)),
+                      selected: isActive,
+                      selectedColor: const Color(0xFF0284C7),
+                      labelStyle: TextStyle(color: isActive ? Colors.white : Colors.black),
+                      onSelected: (_) => setState(() => _activeLayoutId = id),
+                    );
+                  }).toList(),
                 ),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: _pendingPinX != null ? Colors.green[700] : const Color(0xFF1E293B),
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(vertical: 14),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                ),
-                onPressed: _openLayout,
-              ),
+                const SizedBox(height: 8),
+              ],
+              Builder(builder: (context) {
+                final bool hasPendingOnActive =
+                    _pendingLayoutId != null && _pendingLayoutId == _activeLayoutId && _pendingPinX != null;
+                return ElevatedButton.icon(
+                  icon: const Icon(Icons.map, size: 22),
+                  label: Text(
+                    hasPendingOnActive
+                        ? 'POLOHA V PLÁNU ZAZNAMENÁNA – ZMĚNIT'
+                        : 'OTEVŘÍT PLÁN A ŤUKNOUT NA MÍSTO',
+                    style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
+                  ),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: hasPendingOnActive ? Colors.green[700] : const Color(0xFF1E293B),
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  ),
+                  onPressed: _openLayout,
+                );
+              }),
               const SizedBox(height: 12),
             ],
 
@@ -4435,7 +4534,7 @@ class ReportsHistoryScreen extends StatelessWidget {
                             companyName: report.companyName,
                             companyIco: report.companyIco,
                             companyAddress: report.companyAddress,
-                            layoutId: report.layoutId,
+                            layoutIds: report.layoutIds,
                           ),
                         ),
                       );
@@ -4654,11 +4753,24 @@ class _RevisionTableScreenState extends State<RevisionTableScreen> {
 
     final ctx = currentReportContext;
 
-    // Plán provozovny s očíslovanými puntíky – rozměry potřebujeme dopředu,
-    // aby se puntíky daly umístit ze vztažných souřadnic (0–1).
-    final Uint8List? layoutBytes = loadStoredImage(ctx.layoutId);
-    final List<Finding> pinnedFindings = globalFindings.where((f) => f.hasPin).toList();
-    final Size? layoutSize = layoutBytes != null ? await decodeImageSize(layoutBytes) : null;
+    // Plány provozovny s očíslovanými puntíky – rozměry potřebujeme dopředu,
+    // aby se puntíky daly umístit ze vztažných souřadnic (0–1). Každý nahraný
+    // plán dostane v reportu vlastní stránku s jen svými nálezy.
+    final List<({String name, Uint8List bytes, Size size, List<Finding> pinned})> layoutSections = [];
+    for (final layoutId in ctx.layoutIds) {
+      final bytes = loadStoredImage(layoutId);
+      if (bytes == null) continue;
+      final size = await decodeImageSize(bytes);
+      if (size == null) continue;
+      final pinned = globalFindings.where((f) => f.layoutId == layoutId && f.hasPin).toList();
+      layoutSections.add((
+        name: findLayoutByImageId(layoutId)?.name ?? 'Plán provozovny',
+        bytes: bytes,
+        size: size,
+        pinned: pinned,
+      ));
+    }
+    final int totalUnpinned = globalFindings.where((f) => !f.hasPin).length;
 
     pdf.addPage(
       pw.MultiPage(
@@ -4759,20 +4871,28 @@ class _RevisionTableScreenState extends State<RevisionTableScreen> {
               ],
             ),
 
-            // --- PLÁN PROVOZOVNY S OČÍSLOVANÝMI NÁLEZY ---
-            if (layoutBytes != null && layoutSize != null) ...[
+            // --- PLÁNY PROVOZOVNY S OČÍSLOVANÝMI NÁLEZY ---
+            for (final section in layoutSections) ...[
               pw.NewPage(),
-              pw.Text('PLÁN PROVOZOVNY', style: pw.TextStyle(fontSize: 14, fontWeight: pw.FontWeight.bold, color: _pdfNavy)),
+              pw.Text('PLÁN PROVOZOVNY: ${section.name}', style: pw.TextStyle(fontSize: 14, fontWeight: pw.FontWeight.bold, color: _pdfNavy)),
               pw.SizedBox(height: 4),
               pw.Text(
                 'Čísla v plánu odpovídají číslům nálezů v seznamu níže.',
                 style: const pw.TextStyle(fontSize: 9, color: PdfColors.grey600),
               ),
               pw.SizedBox(height: 8),
-              _layoutPlanWidget(layoutBytes, layoutSize, pinnedFindings),
+              _layoutPlanWidget(section.bytes, section.size, section.pinned),
               pw.SizedBox(height: 10),
-              _layoutLegend(pinnedFindings, globalFindings.length),
+              _layoutLegend(section.pinned, section.pinned.length),
             ],
+            if (layoutSections.isNotEmpty && totalUnpinned > 0)
+              pw.Padding(
+                padding: const pw.EdgeInsets.only(top: 4),
+                child: pw.Text(
+                  'Bez vyznačené polohy v žádném plánu: $totalUnpinned ${totalUnpinned == 1 ? "nález" : "nálezů"} (viz detail níže).',
+                  style: const pw.TextStyle(fontSize: 9, color: PdfColors.grey600),
+                ),
+              ),
 
             pw.NewPage(),
 
